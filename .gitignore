@@ -2,7 +2,8 @@
 credentials.json
 token.json
 reports/
-logs/
+logs/*
+!logs/.gitkeep
 __pycache__/
 *.pyc
 *.pyo

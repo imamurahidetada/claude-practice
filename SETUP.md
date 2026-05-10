@@ -1,163 +1,184 @@
-# Gmail 自動分類・要約システム セットアップガイド
+# セットアップガイド
 
-## 概要
+## 前提条件
 
-このシステムは Gmail の受信メールを毎日自動で取得し、Claude AI を使って
-カテゴリ分類と要約を行い、Markdown/JSON レポートとして保存します。
+- Python 3.11 以上
+- Google アカウント
+- Anthropic API アカウント
+- LINE アカウント（通知機能を使う場合）
 
-## システム構成
+---
 
-```
-claude-practice/
-├── main.py                      # エントリーポイント
-├── requirements.txt             # Python 依存ライブラリ
-├── .env                         # 環境変数（要作成）
-├── .env.example                 # 環境変数テンプレート
-├── credentials.json             # Gmail OAuth2 認証ファイル（要取得）
-├── token.json                   # Gmail トークン（初回実行時に自動生成）
-├── reports/                     # 生成されたレポート
-│   ├── report_2026-05-10.md
-│   └── report_2026-05-10.json
-└── gmail_classifier/
-    ├── auth.py                  # Gmail 認証
-    ├── fetcher.py               # メール取得
-    ├── classifier.py            # Claude による分類・要約
-    └── reporter.py              # レポート生成
-```
-
-## セットアップ手順
-
-### 1. Python 依存ライブラリのインストール
+## Step 1: Python 依存ライブラリのインストール
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Google Cloud Console で Gmail API を有効化
+---
+
+## Step 2: Gmail API の設定
+
+### 2-1. Google Cloud Console でプロジェクト作成
 
 1. [Google Cloud Console](https://console.cloud.google.com/) にアクセス
-2. プロジェクトを作成（または既存のものを選択）
-3. **APIs & Services** → **Enable APIs** → "Gmail API" を検索して有効化
-4. **APIs & Services** → **Credentials** → **Create Credentials** → **OAuth client ID**
-5. アプリケーションの種類: **Desktop app** を選択
-6. 作成後、`credentials.json` としてダウンロードしてプロジェクトルートに配置
-7. **OAuth consent screen** で自分のアカウントを「テストユーザー」に追加
+2. 画面上部の「プロジェクトを選択」→「新しいプロジェクト」をクリック
+3. プロジェクト名を入力して「作成」
 
-### 3. 環境変数の設定
+### 2-2. Gmail API を有効化
+
+1. 左メニュー「APIs & Services」→「Enable APIs and Services」
+2. "Gmail API" を検索して「有効にする」
+
+### 2-3. OAuth 同意画面の設定
+
+1. 「APIs & Services」→「OAuth consent screen」
+2. User Type: **外部** を選択して「作成」
+3. アプリ名・サポートメールを入力して「保存して次へ」
+4. スコープは追加不要→「保存して次へ」
+5. テストユーザーに **自分の Gmail アドレス** を追加
+
+### 2-4. OAuth 認証情報の作成
+
+1. 「APIs & Services」→「Credentials」→「CREATE CREDENTIALS」→「OAuth client ID」
+2. アプリケーションの種類: **Desktop app**
+3. 名前を入力して「作成」
+4. 「JSON をダウンロード」→ `credentials.json` としてプロジェクトルートに保存
+
+---
+
+## Step 3: 環境変数の設定
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` を編集して以下を設定:
+`.env` を開いて編集:
 
 ```env
-ANTHROPIC_API_KEY=sk-ant-...          # Anthropic API キー
+# 必須
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxxxxx
+
+# Gmail（credentials.json の場所）
 GMAIL_CREDENTIALS_FILE=credentials.json
 GMAIL_TOKEN_FILE=token.json
+
+# 分類カテゴリ（カスタマイズ可）
 EMAIL_CATEGORIES=仕事,プロジェクト,請求・支払い,ニュースレター,個人,スパム・広告,その他
-REPORT_OUTPUT_DIR=reports
-FETCH_DAYS=1
-CLAUDE_MODEL=claude-sonnet-4-6
+
+# LINE Notify（通知を使う場合）
+LINE_NOTIFY_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
-### 4. 初回実行（Gmail 認証）
+---
+
+## Step 4: LINE Notify トークンの取得
+
+1. [LINE Notify](https://notify-bot.line.me/my/) にアクセス（LINE アカウントでログイン）
+2. 「トークンを発行する」をクリック
+3. トークン名を入力（例: `Gmail分類システム`）
+4. 通知を送るトーク（1:1 または任意のグループ）を選択
+5. 「発行する」→ 表示されたトークンを `.env` の `LINE_NOTIFY_TOKEN` に設定
+
+> **注意**: トークンは発行時にしか表示されません。必ずコピーして保存してください。
+
+---
+
+## Step 5: 初回実行と Gmail 認証
 
 ```bash
 python main.py
 ```
 
-初回はブラウザが開き、Google アカウントでの認証を求められます。
-認証後 `token.json` が自動生成され、次回以降は自動認証されます。
+初回実行時:
+1. ブラウザが自動で開きます
+2. Google アカウントでログイン
+3. 「このアプリは確認されていません」→「詳細」→「（アプリ名）に移動」
+4. 「許可」をクリック
+5. `token.json` が自動生成されます（次回以降は自動認証）
 
-## 使い方
+---
 
-```bash
-# 今日のメールを処理（デフォルト）
-python main.py
-
-# 過去3日分を処理
-python main.py --days 3
-
-# 最大50件に絞る
-python main.py --max 50
-
-# 出力先を変更
-python main.py --output /path/to/reports
-```
-
-## 毎日自動実行（cron）
+## Step 6: cron で毎日自動実行
 
 ```bash
+# ログディレクトリを作成
+mkdir -p logs
+
 # crontab を編集
 crontab -e
 ```
 
-以下を追加（毎朝8時に実行）:
+以下を追加（毎朝 9:00 に実行）:
 
 ```cron
-0 8 * * * cd /path/to/claude-practice && /usr/bin/python3 main.py >> logs/cron.log 2>&1
+0 9 * * * cd /absolute/path/to/claude-practice && /usr/bin/python3 main.py --notify >> logs/cron.log 2>&1
 ```
 
-ログディレクトリを事前に作成:
+> `/absolute/path/to/claude-practice` は実際のパスに変更してください。
+> `which python3` でPythonのパスを確認できます。
+
+### cron の動作確認
 
 ```bash
-mkdir -p logs
+# 手動テスト（notify なしで実行）
+python main.py --days 1 --max 10
+
+# ログを確認
+tail -f logs/cron.log
 ```
-
-## 出力例
-
-### Markdown レポート (`reports/report_2026-05-10.md`)
-
-```markdown
-# メール日次レポート - 2026-05-10
-
-**取得件数:** 12 件
-**生成日時:** 2026-05-10 08:00:15
 
 ---
 
-## カテゴリ別サマリー
+## 動作確認チェックリスト
 
-| カテゴリ | 件数 |
-|---|---|
-| 仕事 | 5 件 |
-| ニュースレター | 4 件 |
-| 個人 | 2 件 |
-| スパム・広告 | 1 件 |
+- [ ] `pip install -r requirements.txt` が成功する
+- [ ] `credentials.json` がプロジェクトルートに存在する
+- [ ] `.env` に `ANTHROPIC_API_KEY` が設定されている
+- [ ] `python main.py` を初回実行してブラウザ認証が完了する
+- [ ] `token.json` が生成される
+- [ ] `reports/report_YYYY-MM-DD.json` が生成される
+- [ ] （オプション）`python main.py --notify` で LINE 通知が届く
+- [ ] crontab に設定が追加されている
 
 ---
-
-## 仕事 (5 件)
-
-### 来週のミーティング日程調整
-- **送信者:** boss@company.com
-- **受信日:** Sat, 10 May 2026 07:30:00 +0900
-- **要約:** 来週月曜日の全社ミーティングの日程調整依頼です。...
-```
-
-### JSON データ (`reports/report_2026-05-10.json`)
-
-機械処理やデータ分析に利用できる構造化データです。
-
-## カテゴリのカスタマイズ
-
-`.env` の `EMAIL_CATEGORIES` を編集してカテゴリを変更できます:
-
-```env
-EMAIL_CATEGORIES=緊急,要対応,FYI,ニュースレター,個人,スパム,その他
-```
 
 ## トラブルシューティング
 
 ### `credentials.json が見つかりません`
-Google Cloud Console から認証ファイルをダウンロードし、プロジェクトルートに配置してください。
+
+Google Cloud Console から認証情報をダウンロードして `credentials.json` としてプロジェクトルートに配置してください。
+
+### Gmail 認証エラー（`invalid_grant` など）
+
+```bash
+rm token.json
+python main.py  # 再認証
+```
+
+### LINE 通知が届かない
+
+```bash
+# .env の LINE_NOTIFY_TOKEN を確認
+grep LINE_NOTIFY_TOKEN .env
+
+# ログでエラーを確認
+tail -20 logs/cron.log
+```
 
 ### `ANTHROPIC_API_KEY が設定されていません`
-`.env` ファイルに正しい API キーを設定してください。
 
-### Gmail 認証エラー
-`token.json` を削除して再認証してください:
+`.env` ファイルに正しいキーを設定してください。[Anthropic Console](https://console.anthropic.com/) で API キーを取得できます。
+
+### cron が動かない
+
 ```bash
-rm token.json && python main.py
+# cron サービスの状態を確認
+systemctl status cron
+
+# crontab の設定を確認
+crontab -l
+
+# 絶対パスで手動実行して確認
+/usr/bin/python3 /absolute/path/to/claude-practice/main.py
 ```

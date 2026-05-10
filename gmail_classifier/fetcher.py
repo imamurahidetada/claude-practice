@@ -14,6 +14,7 @@ class EmailMessage:
     body: str
     labels: list[str] = field(default_factory=list)
     category: Optional[str] = None
+    importance: int = 3
     summary: Optional[str] = None
 
 

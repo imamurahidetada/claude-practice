@@ -3,22 +3,44 @@
 Gmail 自動分類・要約システム
 
 使い方:
-  python main.py               # 今日のメールを処理
-  python main.py --days 3      # 過去3日分を処理
-  python main.py --max 50      # 最大50件を処理
-  python main.py --output ./out  # 出力先を変更
+  python main.py                   # 今日のメールを処理
+  python main.py --days 1          # 過去 24 時間分（デフォルト）
+  python main.py --max 50          # 最大 50 件を処理
+  python main.py --notify          # 処理後に LINE Notify で通知
+  python main.py --output ./out    # 出力先を変更
 """
 
 import argparse
+import logging
 import os
 import sys
+from collections import Counter
 from datetime import datetime
+
 from dotenv import load_dotenv
 
-from gmail_classifier.auth import get_gmail_service
-from gmail_classifier.fetcher import fetch_recent_emails
-from gmail_classifier.classifier import EmailClassifier
-from gmail_classifier.reporter import ReportGenerator
+
+def _setup_logging(log_dir: str) -> logging.Logger:
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "cron.log")
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, encoding="utf-8"),
+            logging.StreamHandler(sys.stdout),
+        ],
+    )
+    return logging.getLogger(__name__)
+
+
+def _check_env(key: str, logger: logging.Logger) -> str:
+    value = os.getenv(key, "").strip()
+    if not value:
+        logger.error("環境変数 %s が設定されていません。", key)
+        sys.exit(1)
+    return value
 
 
 def main() -> None:
@@ -31,18 +53,24 @@ def main() -> None:
                         help="最大取得件数 (デフォルト: 100)")
     parser.add_argument("--output", type=str, default=os.getenv("REPORT_OUTPUT_DIR", "reports"),
                         help="レポート出力ディレクトリ")
+    parser.add_argument("--notify", action="store_true",
+                        help="処理後に LINE Notify で通知する")
+    parser.add_argument("--log-dir", type=str, default="logs",
+                        help="ログディレクトリ (デフォルト: logs)")
     args = parser.parse_args()
 
-    # 必須環境変数チェック
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("エラー: ANTHROPIC_API_KEY が設定されていません。", file=sys.stderr)
-        sys.exit(1)
+    logger = _setup_logging(args.log_dir)
+
+    logger.info("=" * 50)
+    logger.info("Gmail 自動分類・要約システム 開始")
+    logger.info("対象期間: 過去 %d 日間 / 最大 %d 件", args.days, args.max_results)
+
+    # 必須環境変数
+    api_key = _check_env("ANTHROPIC_API_KEY", logger)
 
     credentials_file = os.getenv("GMAIL_CREDENTIALS_FILE", "credentials.json")
     if not os.path.exists(credentials_file):
-        print(f"エラー: Gmail 認証ファイル '{credentials_file}' が見つかりません。", file=sys.stderr)
-        print("SETUP.md を参照して Google Cloud Console から認証情報を取得してください。", file=sys.stderr)
+        logger.error("Gmail 認証ファイル '%s' が見つかりません。SETUP.md を参照してください。", credentials_file)
         sys.exit(1)
 
     token_file = os.getenv("GMAIL_TOKEN_FILE", "token.json")
@@ -50,50 +78,74 @@ def main() -> None:
     categories_env = os.getenv("EMAIL_CATEGORIES", "")
     categories = [c.strip() for c in categories_env.split(",") if c.strip()] or None
 
-    print("=" * 60)
-    print("Gmail 自動分類・要約システム")
-    print("=" * 60)
-    print(f"対象期間: 過去 {args.days} 日間")
-    print(f"使用モデル: {model}")
-    print()
+    # ---- Phase 1: Gmail 取得 ----
+    from gmail_classifier.auth import get_gmail_service
+    from gmail_classifier.fetcher import fetch_recent_emails
 
-    # Gmail 認証
-    print("Gmail に接続中...")
-    service = get_gmail_service(credentials_file, token_file)
-    print("接続完了。")
-    print()
+    logger.info("Gmail に接続中...")
+    try:
+        service = get_gmail_service(credentials_file, token_file)
+        logger.info("Gmail 接続完了。")
+    except Exception as exc:
+        logger.error("Gmail 接続失敗: %s", exc)
+        sys.exit(1)
 
-    # メール取得
-    print(f"メールを取得中（最大 {args.max_results} 件）...")
-    emails = fetch_recent_emails(service, days=args.days, max_results=args.max_results)
-    print(f"{len(emails)} 件のメールを取得しました。")
-    print()
+    logger.info("メールを取得中...")
+    try:
+        emails = fetch_recent_emails(service, days=args.days, max_results=args.max_results)
+        logger.info("%d 件のメールを取得しました。", len(emails))
+    except Exception as exc:
+        logger.error("メール取得失敗: %s", exc)
+        sys.exit(1)
 
     if not emails:
-        print("処理するメールがありません。")
+        logger.info("処理するメールがありません。終了します。")
         return
 
-    # 分類・要約
-    print("Claude API でメールを分類・要約中...")
+    # ---- Phase 2: Claude で分類・要約 ----
+    from gmail_classifier.classifier import EmailClassifier
+
+    logger.info("Claude API でメールを分類・要約中... (モデル: %s)", model)
     classifier = EmailClassifier(api_key=api_key, model=model, categories=categories)
-    classifier.process_all(emails)
-    print()
+    classifier.process_all(emails, logger=logger)
 
-    # レポート生成
-    print("レポートを生成中...")
-    reporter = ReportGenerator(output_dir=args.output)
-    report_path = reporter.generate(emails, date=datetime.now())
-    print(f"レポートを保存しました: {report_path}")
-    print()
-
-    # サマリー表示
-    from collections import Counter
     cat_counts = Counter(e.category for e in emails)
-    print("=== 分類結果 ===")
-    for cat, count in sorted(cat_counts.items(), key=lambda x: -x[1]):
-        print(f"  {cat}: {count} 件")
+    logger.info("分類完了: %s", dict(cat_counts))
+
+    # ---- Phase 3: レポート生成 ----
+    from gmail_classifier.reporter import ReportGenerator
+
+    logger.info("レポートを生成中...")
+    reporter = ReportGenerator(output_dir=args.output)
+    json_path = reporter.generate(emails, date=datetime.now())
+    logger.info("レポートを保存しました: %s", json_path)
+
+    # ---- Phase 4: LINE Notify ----
+    if args.notify:
+        from gmail_classifier.notifier import build_notifier_from_env
+
+        notifier = build_notifier_from_env()
+        if notifier:
+            logger.info("LINE Notify に通知中...")
+            success = notifier.send_daily_report(json_path)
+            if success:
+                logger.info("LINE Notify 送信完了。")
+            else:
+                logger.error("LINE Notify 送信失敗。logs/cron.log を確認してください。")
+        else:
+            logger.warning("LINE_NOTIFY_TOKEN が未設定のため通知をスキップしました。")
+
+    # ---- サマリー表示 ----
     print()
-    print("完了。")
+    print("=" * 50)
+    print("=== 分類結果サマリー ===")
+    for cat, count in sorted(cat_counts.items(), key=lambda x: -x[1]):
+        high = sum(1 for e in emails if e.category == cat and e.importance >= 4)
+        suffix = f"  (要対応: {high} 件)" if high else ""
+        print(f"  {cat}: {count} 件{suffix}")
+    print(f"\nレポート: {json_path}")
+    print("=" * 50)
+    logger.info("処理完了。")
 
 
 if __name__ == "__main__":

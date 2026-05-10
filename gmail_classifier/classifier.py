@@ -1,4 +1,5 @@
 import json
+import re
 import anthropic
 from .fetcher import EmailMessage
 
@@ -13,11 +14,37 @@ DEFAULT_CATEGORIES = [
 ]
 
 _CLASSIFY_SYSTEM = """\
-あなたはメール分類の専門家です。与えられたメール情報をもとに、
-カテゴリを1つ選び、3〜5文の日本語要約を作成してください。
+あなたはメール分類の専門家です。与えられたメール情報をもとに以下を判断してください。
+
+1. カテゴリ: 候補から1つ選ぶ
+2. 重要度: 1〜5 の整数（5 が最重要）
+   - 5: 即対応必須（締め切り・緊急連絡・重要契約）
+   - 4: 近日中に対応（会議設定・重要依頼）
+   - 3: 確認推奨（一般業務・返信が必要な個人連絡）
+   - 2: 参考程度（FYI・ニュースレター）
+   - 1: 対応不要（広告・スパム・自動通知）
+3. 要約: 100文字以内の日本語
+
 必ず以下の JSON 形式のみで返してください（他のテキストは不要）:
-{"category": "<カテゴリ>", "summary": "<要約>"}
+{"category": "<カテゴリ>", "importance": <1-5の整数>, "summary": "<100文字以内の要約>"}
 """
+
+
+def _extract_json(raw: str) -> dict:
+    """Claude レスポンスから JSON を抽出してパースする。"""
+    text = raw.strip()
+    # ```json ... ``` ブロックを除去
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # 最初の { ... } を探す
+        m = re.search(r"\{[^{}]+\}", text)
+        if m:
+            return json.loads(m.group())
+        return {}
 
 
 class EmailClassifier:
@@ -27,7 +54,7 @@ class EmailClassifier:
         self._categories = categories or DEFAULT_CATEGORIES
 
     def process(self, email: EmailMessage) -> EmailMessage:
-        """メールを分類・要約して in-place で更新し返す。"""
+        """メールを分類・要約・重要度判定して in-place で更新し返す。"""
         body_preview = email.body[:2000] if email.body else "(本文なし)"
         categories_str = "、".join(self._categories)
 
@@ -42,7 +69,7 @@ class EmailClassifier:
 
 選択可能なカテゴリ: {categories_str}
 
-カテゴリを1つ選び、3〜5文の日本語要約を JSON で返してください。"""
+カテゴリ、重要度（1〜5）、100文字以内の要約を JSON で返してください。"""
 
         response = self._client.messages.create(
             model=self._model,
@@ -51,25 +78,28 @@ class EmailClassifier:
             messages=[{"role": "user", "content": prompt}],
         )
 
-        raw = response.content[0].text.strip()
-        # JSON ブロックを抽出（```json ... ``` 形式にも対応）
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        try:
-            data = json.loads(raw)
-            email.category = data.get("category", "その他")
-            email.summary = data.get("summary", "")
-        except json.JSONDecodeError:
-            email.category = "その他"
-            email.summary = raw[:300]
+        raw = response.content[0].text
+        data = _extract_json(raw)
+
+        email.category = data.get("category", "その他")
+        email.importance = int(data.get("importance", 3))
+        summary = data.get("summary", "")
+        email.summary = summary[:100] if summary else ""
 
         return email
 
-    def process_all(self, emails: list[EmailMessage]) -> list[EmailMessage]:
+    def process_all(self, emails: list[EmailMessage], logger=None) -> list[EmailMessage]:
         """メールリストをまとめて処理する。"""
         for i, email in enumerate(emails, 1):
-            print(f"  [{i}/{len(emails)}] 処理中: {email.subject[:50]}")
-            self.process(email)
+            label = f"[{i}/{len(emails)}] {email.subject[:50]}"
+            try:
+                self.process(email)
+                print(f"  ✓ {label}")
+            except Exception as exc:
+                print(f"  ✗ {label} — {exc}")
+                if logger:
+                    logger.error("分類失敗: %s — %s", email.subject, exc)
+                email.category = "その他"
+                email.importance = 3
+                email.summary = ""
         return emails
