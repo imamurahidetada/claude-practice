@@ -141,6 +141,30 @@ python main.py
 
 ---
 
+## Step 5-b: LINE Messaging API の接続テスト
+
+`.env` に `LINE_CHANNEL_ACCESS_TOKEN` と `LINE_RECIPIENT_ID` を設定したら、
+以下のテストスクリプトで動作確認できます。
+
+```bash
+# 設定確認のみ（送信しない）
+python test_line.py --dry
+
+# テストメッセージを実際に送信
+python test_line.py
+```
+
+成功すると LINE に以下のようなメッセージが届きます:
+
+```
+✅ Gmail 自動分類システム — 接続テスト成功
+送信日時: 2026-05-10 09:00:00
+
+このメッセージが届いていれば LINE Messaging API の設定は完了です。
+```
+
+---
+
 ## Step 6: cron で毎日自動実行
 
 ```bash
@@ -174,14 +198,26 @@ tail -f logs/cron.log
 
 ## 動作確認チェックリスト
 
+**Gmail / Claude**
 - [ ] `pip install -r requirements.txt` が成功する
 - [ ] `credentials.json` がプロジェクトルートに存在する
 - [ ] `.env` に `ANTHROPIC_API_KEY` が設定されている
 - [ ] `python main.py` を初回実行してブラウザ認証が完了する
 - [ ] `token.json` が生成される
 - [ ] `reports/report_YYYY-MM-DD.json` が生成される
-- [ ] （オプション）`python main.py --notify` で LINE 通知が届く
+
+**LINE Messaging API**
+- [ ] LINE Developers でチャネルを作成した
+- [ ] Channel Access Token を発行して `.env` に設定した
+- [ ] Bot を友だち追加した
+- [ ] `LINE_RECIPIENT_ID` を取得して `.env` に設定した
+- [ ] `python test_line.py --dry` でエラーが出ない
+- [ ] `python test_line.py` で LINE にテストメッセージが届く
+- [ ] `python main.py --notify` で分類結果が LINE に届く
+
+**自動実行**
 - [ ] crontab に設定が追加されている
+- [ ] `tail -f logs/cron.log` でログが記録されている
 
 ---
 
