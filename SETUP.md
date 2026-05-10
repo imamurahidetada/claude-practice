@@ -66,21 +66,63 @@ GMAIL_TOKEN_FILE=token.json
 # 分類カテゴリ（カスタマイズ可）
 EMAIL_CATEGORIES=仕事,プロジェクト,請求・支払い,ニュースレター,個人,スパム・広告,その他
 
-# LINE Notify（通知を使う場合）
-LINE_NOTIFY_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+# LINE Messaging API（通知を使う場合）
+LINE_CHANNEL_ACCESS_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+LINE_RECIPIENT_ID=Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ---
 
-## Step 4: LINE Notify トークンの取得
+## Step 4: LINE Messaging API の設定
 
-1. [LINE Notify](https://notify-bot.line.me/my/) にアクセス（LINE アカウントでログイン）
-2. 「トークンを発行する」をクリック
-3. トークン名を入力（例: `Gmail分類システム`）
-4. 通知を送るトーク（1:1 または任意のグループ）を選択
-5. 「発行する」→ 表示されたトークンを `.env` の `LINE_NOTIFY_TOKEN` に設定
+> LINE Notify は 2025 年 3 月にサービス終了したため、LINE Messaging API を使用します。
 
-> **注意**: トークンは発行時にしか表示されません。必ずコピーして保存してください。
+### 4-1. LINE Developers でチャネルを作成
+
+1. [LINE Developers コンソール](https://developers.line.biz/console/) にアクセス（LINE アカウントでログイン）
+2. 「プロバイダー」→「作成」→ プロバイダー名を入力
+3. 「チャネルを作成する」→「Messaging API」を選択
+4. 各項目を入力して「作成」
+
+### 4-2. Channel Access Token を取得
+
+1. 作成したチャネルを開く
+2. 「Messaging API 設定」タブ → 一番下の **「Channel access token」**
+3. 「発行」ボタンをクリック
+4. 表示されたトークンを `.env` の `LINE_CHANNEL_ACCESS_TOKEN` に設定
+
+### 4-3. Bot を友だち追加
+
+1. 「Messaging API 設定」タブの QR コードを LINE アプリでスキャン
+2. Bot を友だち追加する
+
+### 4-4. 送信先 ID（LINE_RECIPIENT_ID）を確認
+
+Bot に何かメッセージを送ったあと、以下のいずれかで User ID を取得します。
+
+**方法 A: Webhook で確認（推奨）**
+
+チャネルの「Messaging API 設定」→ Webhook URL に任意のサーバーを設定し、
+Bot へのメッセージイベントに含まれる `source.userId` を確認する。
+
+**方法 B: curl で確認（簡単）**
+
+```bash
+# Bot に "hello" とメッセージを送ってから実行
+curl -H "Authorization: Bearer YOUR_CHANNEL_ACCESS_TOKEN" \
+  https://api.line.me/v2/bot/followers/ids
+```
+
+返却される `userIds` の最初の値が自分の User ID（`Uxxxxxxxx`）です。
+
+```bash
+# 取得できたら .env に設定
+LINE_RECIPIENT_ID=Uxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> **グループに送る場合**: Group ID（`Cxxxxxxxx`）を `LINE_RECIPIENT_ID` に設定してください。
+
+> **注意**: Channel Access Token は再発行のたびに旧トークンが無効になります。
 
 ---
 
@@ -159,12 +201,17 @@ python main.py  # 再認証
 ### LINE 通知が届かない
 
 ```bash
-# .env の LINE_NOTIFY_TOKEN を確認
-grep LINE_NOTIFY_TOKEN .env
+# .env の設定を確認
+grep LINE_ .env
 
 # ログでエラーを確認
 tail -20 logs/cron.log
 ```
+
+よくある原因:
+- Bot を友だち追加していない → LINE アプリで QR コードをスキャン
+- `LINE_RECIPIENT_ID` が間違っている → User ID は `U` から始まる 33 文字
+- Channel Access Token が失効している → LINE Developers コンソールで再発行
 
 ### `ANTHROPIC_API_KEY が設定されていません`
 

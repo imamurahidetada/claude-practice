@@ -6,7 +6,7 @@ Gmail 自動分類・要約システム
   python main.py                   # 今日のメールを処理
   python main.py --days 1          # 過去 24 時間分（デフォルト）
   python main.py --max 50          # 最大 50 件を処理
-  python main.py --notify          # 処理後に LINE Notify で通知
+  python main.py --notify          # 処理後に LINE Messaging API で通知
   python main.py --output ./out    # 出力先を変更
 """
 
@@ -54,7 +54,7 @@ def main() -> None:
     parser.add_argument("--output", type=str, default=os.getenv("REPORT_OUTPUT_DIR", "reports"),
                         help="レポート出力ディレクトリ")
     parser.add_argument("--notify", action="store_true",
-                        help="処理後に LINE Notify で通知する")
+                        help="処理後に LINE Messaging API で通知する")
     parser.add_argument("--log-dir", type=str, default="logs",
                         help="ログディレクトリ (デフォルト: logs)")
     args = parser.parse_args()
@@ -120,20 +120,20 @@ def main() -> None:
     json_path = reporter.generate(emails, date=datetime.now())
     logger.info("レポートを保存しました: %s", json_path)
 
-    # ---- Phase 4: LINE Notify ----
+    # ---- Phase 4: LINE Messaging API ----
     if args.notify:
         from gmail_classifier.notifier import build_notifier_from_env
 
         notifier = build_notifier_from_env()
         if notifier:
-            logger.info("LINE Notify に通知中...")
+            logger.info("LINE Messaging API に通知中...")
             success = notifier.send_daily_report(json_path)
             if success:
-                logger.info("LINE Notify 送信完了。")
+                logger.info("LINE Messaging API 送信完了。")
             else:
-                logger.error("LINE Notify 送信失敗。logs/cron.log を確認してください。")
+                logger.error("LINE Messaging API 送信失敗。logs/cron.log を確認してください。")
         else:
-            logger.warning("LINE_NOTIFY_TOKEN が未設定のため通知をスキップしました。")
+            logger.warning("LINE_CHANNEL_ACCESS_TOKEN / LINE_RECIPIENT_ID が未設定のため通知をスキップしました。")
 
     # ---- サマリー表示 ----
     print()
