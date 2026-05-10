@@ -1,4 +1,6 @@
 import os
+import httplib2
+import google_auth_httplib2
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -23,4 +25,7 @@ def get_gmail_service(credentials_file: str, token_file: str):
         with open(token_file, "w") as f:
             f.write(creds.to_json())
 
-    return build("gmail", "v1", credentials=creds)
+    # 自己署名証明書環境向けに SSL 検証を無効化した http を使用
+    http = httplib2.Http(disable_ssl_certificate_validation=True)
+    authorized_http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+    return build("gmail", "v1", http=authorized_http)
