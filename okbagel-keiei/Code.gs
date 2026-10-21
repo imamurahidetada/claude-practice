@@ -13,19 +13,28 @@
  *  5. 共有URLで自動入力したい場合は「フォーム自動取込セットアップ」、毎日の吸い上げは「毎日自動吸い上げを設定」
  */
 
+// 年次まとめ側のタブ
 var SHEET = {
   IMPORT: '取り込み',
   EVENT: '催事マスタ',
   PRODUCT: '商品マスタ',
-  STOCK: '日次在庫',
-  SALES: '日次売上',
-  LABOR: '人件費',
-  EXPENSE: '使用経費',
-  RECEIPT: '領収書',
   LOG: '取込ログ',
   SETTINGS: '設定',
   STOREDATA: '店舗データ'
 };
+
+// 店舗ファイル側のタブ（元の「在庫管理表」と同じ形）
+var STORE = {
+  STOCK: '在庫管理表',          // 日ごとに8列ブロックが横に並ぶ（E列から）
+  LABOR: '人件費（本部専用）',
+  EXPENSE: '使用経費（本部専用）',
+  RECEIPT: '領収書（立替経費）',
+  EVENT: '催事マスタ（本部専用）',
+  SUMMARY: '集計用'
+};
+var DAYS = 31;          // 在庫管理表の日数ブロック数
+var FIRST_ROW = 7;      // 商品の1行目
+var FIRST_COL = 5;      // 1日目ブロックの先頭列（E）
 
 // ---------------------------------------------------------------- 文章の解析（純粋関数）
 
@@ -194,6 +203,7 @@ function importText(text) {
     lastWage: JSON.parse(props.getProperty('lastWage') || '{}')
   };
   var res = parseReport(text, ctx);
+  var parseErrors = res.errors.slice();
   props.setProperty('lastWage', JSON.stringify(ctx.lastWage));
 
   // 催事ごとにまとめて、その店舗ファイルへ書き込む
@@ -204,10 +214,15 @@ function importText(text) {
   Object.keys(byEvent).forEach(function (event) {
     var recs = byEvent[event];
     try {
-      writeToStore_(openStore_(hq, event), recs, tz);
+      var bad = writeToStore_(openStore_(hq, event), recs, tz);
+      var badSrc = {};
+      bad.forEach(function (x) { badSrc[x.src] = x.msg; res.errors.push({ line: x.src, msg: x.msg }); });
       touched.push(event);
-      ok += recs.length;
-      recs.forEach(function (r) { log.push([now, r.type, r.src, 'OK', event]); });
+      ng += bad.length;
+      recs.forEach(function (r) {
+        if (badSrc[r.src]) log.push([now, r.type, r.src, 'エラー', badSrc[r.src]]);
+        else { ok++; log.push([now, r.type, r.src, 'OK', event]); }
+      });
     } catch (e) {
       ng += recs.length;
       var m = '店舗ファイルへの書き込みに失敗: ' + e.message;
@@ -215,7 +230,7 @@ function importText(text) {
       recs.forEach(function (r) { log.push([now, r.type, r.src, 'エラー', m]); });
     }
   });
-  res.errors.forEach(function (x) { if (x.msg.indexOf('店舗ファイルへ') !== 0) log.push([now, '', x.line, 'エラー', x.msg]); });
+  parseErrors.forEach(function (x) { log.push([now, '', x.line, 'エラー', x.msg]); });
 
   if (log.length) {
     var ls = hq.getSheetByName(SHEET.LOG);
@@ -228,55 +243,80 @@ function importText(text) {
   return msg;
 }
 
-/** 1つの店舗ファイルに、その催事の記録を書き込む */
+/** 1つの店舗ファイルに、その催事の記録を書き込む。書けなかった行は errors で返す */
 function writeToStore_(store, recs, tz) {
   var by = { sales: [], stock: [], labor: [], expense: [], receipt: [] };
   recs.forEach(function (r) { by[r.type].push(r); });
+  var errors = [];
+  var fail = function (r, e) { errors.push({ src: r.src, msg: e.message }); };
 
-  upsert_(store, SHEET.SALES, by.sales, 5, [0, 1], function (r) {
-    return [r.date, r.event];
-  }, function (r, row) {
-    return [toDate_(r.date), r.event,
-      r.ex !== null ? r.ex : (row ? row[2] : ''), r.inc !== null ? r.inc : (row ? row[3] : ''), (row ? row[4] : '')];
-  }, tz);
+  var sh = store.getSheetByName(STORE.STOCK);
+  var layout = stockLayout_(sh);
 
-  upsert_(store, SHEET.STOCK, by.stock, 12, [0, 1, 2], function (r) {
-    return [r.date, r.event, r.product];
-  }, function (r, row, n) {
-    var o = row || [];
-    var pick = function (v, i) { return v !== null ? v : (o[i] !== undefined ? o[i] : ''); };
-    return [toDate_(r.date), r.event, r.product, pick(r.in, 3), pick(r.thaw, 4), pick(r.close, 5),
-      pick(r.loss, 6), pick(r.other, 7),
-      '=IF(E' + n + '="","",E' + n + '-N(F' + n + ')-N(G' + n + ')-N(H' + n + '))',
-      '=IFERROR(VLOOKUP(C' + n + ',' + SHEET.PRODUCT + '!$A:$B,2,FALSE),"")',
-      '=IF(OR(I' + n + '="",J' + n + '=""),"",I' + n + '*J' + n + ')',
-      '=IF(OR(G' + n + '="",J' + n + '=""),"",G' + n + '*J' + n + ')'];
-  }, tz);
+  by.stock.forEach(function (r) { try { writeStock_(sh, layout, r); } catch (e) { fail(r, e); } });
+  by.sales.forEach(function (r) { try { writeSales_(sh, layout, r); } catch (e) { fail(r, e); } });
+  by.labor.forEach(function (r) { try { writeLabor_(store, r, tz); } catch (e) { fail(r, e); } });
+  by.expense.forEach(function (r) {
+    var s2 = store.getSheetByName(STORE.EXPENSE);
+    var n = firstEmpty_(s2, 1, 2, 300);
+    s2.getRange(n, 1, 1, 5).setValues([[toDate_(r.date), r.event, r.item, r.note, r.amount]]);
+  });
+  by.receipt.forEach(function (r) {
+    var s3 = store.getSheetByName(STORE.RECEIPT);
+    var n = firstEmpty_(s3, 1, 2, 300);
+    s3.getRange(n, 1, 1, 6).setValues([[toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate]]);
+    s3.getRange(n, 9).setValue(r.event);
+  });
+  return errors;
+}
 
-  upsert_(store, SHEET.LABOR, by.labor, 11, [0, 1, 2], function (r) {
-    return [r.date, r.name, r.event];
-  }, function (r, row, n) {
-    return [toDate_(r.date), r.name, r.event, r.start, r.end, r.rest,
-      '=IF(OR(D' + n + '="",E' + n + '=""),"",MOD(E' + n + '-D' + n + ',1)*24-F' + n + '/60)',
-      r.wage, r.transReceipt === null ? '' : r.transReceipt, r.transNone === null ? '' : r.transNone,
-      '=IF(OR(G' + n + '="",H' + n + '=""),"",G' + n + '*H' + n + '+N(I' + n + ')+N(J' + n + '))'];
-  }, tz);
+/** 在庫管理表の行・日付の位置を調べる（商品行を増減しても追従） */
+function stockLayout_(sh) {
+  var names = sh.getRange(FIRST_ROW, 3, 60, 1).getValues().map(function (r) { return String(r[0]).trim(); });
+  var end = names.indexOf('商品合計');
+  if (end < 0) throw new Error('在庫管理表に「商品合計」行が見つかりません');
+  return { names: names, count: end, salesRow: FIRST_ROW + end + 2, start: sh.getRange('B2').getValue() };
+}
 
-  append_(store, SHEET.EXPENSE, by.expense.map(function (r) {
-    return function (n) {
-      return [toDate_(r.date), r.event, r.item, r.note, r.amount,
-        '=IF(OR(C' + n + '="宿泊費",C' + n + '="交通費"),ROUND(E' + n + '/1.1,0),E' + n + ')'];
-    };
-  }));
+function dayBlock_(layout, dateStr) {
+  var k = Math.round((toDate_(dateStr) - layout.start) / 86400000);
+  if (isNaN(k) || k < 0 || k >= DAYS) throw new Error(dateStr + ' は催事の開始日から' + DAYS + '日の範囲外です');
+  return FIRST_COL + 8 * k;
+}
 
-  append_(store, SHEET.RECEIPT, by.receipt.map(function (r) {
-    return function (n) {
-      return [toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate,
-        '=IF(OR(E' + n + '="",F' + n + '=""),"",E' + n + '*F' + n + ')',
-        '=IF(E' + n + '="","",E' + n + '+N(G' + n + '))', r.event,
-        '=IF(A' + n + '="","",MONTH(A' + n + '))'];
-    };
-  }));
+function writeStock_(sh, layout, r) {
+  var i = layout.names.indexOf(r.product);
+  if (i < 0 || i >= layout.count) throw new Error('商品「' + r.product + '」が在庫管理表にありません');
+  var c = dayBlock_(layout, r.date), row = FIRST_ROW + i;
+  var set = function (off, v) { if (v !== null) sh.getRange(row, c + off).setValue(v); };
+  set(0, r.in); set(2, r.thaw); set(3, r.close); set(4, r.loss); set(5, r.other);
+}
+
+function writeSales_(sh, layout, r) {
+  var c = dayBlock_(layout, r.date);
+  if (r.ex !== null) sh.getRange(layout.salesRow, c + 1).setValue(r.ex);
+  if (r.inc !== null) sh.getRange(layout.salesRow, c + 2).setValue(r.inc);
+}
+
+/** 同じ日・同じ人の行があれば上書き、なければ空き行に書く */
+function writeLabor_(store, r, tz) {
+  var sh = store.getSheetByName(STORE.LABOR);
+  var vals = sh.getRange(2, 1, 300, 3).getValues();
+  var row = 0, empty = 0;
+  for (var i = 0; i < vals.length; i++) {
+    if (!vals[i][0] && !empty) empty = i + 2;
+    if (cellKey_(vals[i][0], tz) === r.date && String(vals[i][1]).trim() === r.name) { row = i + 2; break; }
+  }
+  row = row || empty;
+  if (!row) throw new Error('人件費タブに空き行がありません');
+  sh.getRange(row, 1, 1, 7).setValues([[toDate_(r.date), r.name, r.event, r.event, r.start, r.end, r.rest]]);
+  sh.getRange(row, 9, 1, 3).setValues([[r.wage, r.transReceipt === null ? '' : r.transReceipt, r.transNone === null ? '' : r.transNone]]);
+}
+
+function firstEmpty_(sh, col, from, count) {
+  var v = sh.getRange(from, col, count, 1).getValues();
+  for (var i = 0; i < v.length; i++) if (!v[i][0]) return from + i;
+  throw new Error(sh.getName() + ' に空き行がありません');
 }
 
 // ---------------------------------------------------------------- 店舗ファイルの作成・取得
@@ -306,8 +346,11 @@ function createStoreFile_(hq, row) {
   var tz = hq.getSpreadsheetTimeZone();
   var year = Utilities.formatDate(v[2] instanceof Date ? v[2] : new Date(), tz, 'yyyy');
   var copy = DriveApp.getFileById(templateId).makeCopy(v[0] + ' ' + year, DriveApp.getFolderById(folderId));
-  var st = SpreadsheetApp.openById(copy.getId()).getSheetByName(SHEET.SETTINGS);
-  st.getRange('B1:B5').setValues([[v[0]], [v[4]], [v[1]], [v[2]], [v[3]]]);
+  var store = SpreadsheetApp.openById(copy.getId());
+  var st = store.getSheetByName(STORE.STOCK);
+  st.getRange('B1').setValue(v[0]);
+  st.getRange('B2').setValue(v[2]);
+  store.getSheetByName(STORE.EVENT).getRange('A2:E2').setValues([[v[0], v[1], v[2], v[3], v[4]]]);
   ev.getRange(row, 6).setValue(copy.getId());
   return copy.getId();
 }
@@ -352,13 +395,13 @@ function pullStoreData_(hq, events) {
     if (events && events.indexOf(name) < 0) return;
     var vals;
     try {
-      vals = SpreadsheetApp.openById(String(id)).getSheetByName('集計用').getRange('A2:G2').getValues()[0];
+      vals = SpreadsheetApp.openById(String(id)).getSheetByName(STORE.SUMMARY).getRange('A2:K2').getValues()[0];
     } catch (e) { return; }
     vals[0] = name;
     var row = vals.concat([now]);
     var at = rowOf[name];
     if (!at) { at = nextRow++; rowOf[name] = at; }
-    data.getRange(at, 1, 1, 8).setValues([row]);
+    data.getRange(at, 1, 1, 12).setValues([row]);
     count++;
   });
   return count;
@@ -384,45 +427,6 @@ function col_(ss, name, c) {
 function toDate_(s) { var p = s.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); }
 function cellKey_(v, tz) {
   return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(v).trim();
-}
-
-/**
- * キーが同じ行があれば上書き、無ければ末尾に追加（二重に貼っても重複しない）
- * keyCols: 既存行の中でキーになる列番号(0始まり)。日付は 'yyyy-MM-dd' で比較
- * keyFn(r) -> キー配列 / rowFn(r, 既存行 or null, シート行番号) -> 書き込む1行
- */
-function upsert_(ss, name, recs, width, keyCols, keyFn, rowFn, tz) {
-  if (!recs.length) return;
-  var sh = ss.getSheetByName(name);
-  var last = sh.getLastRow();
-  var existing = last > 1 ? sh.getRange(2, 1, last - 1, width).getValues() : [];
-  var rowOf = {};   // キー -> シート行番号
-  existing.forEach(function (row, i) {
-    rowOf[keyCols.map(function (c) { return cellKey_(row[c], tz); }).join('|')] = i + 2;
-  });
-  var added = [];   // 今回追加する行
-  recs.forEach(function (r) {
-    var key = keyFn(r).join('|');
-    var n = rowOf[key];
-    if (n && n <= last) {
-      sh.getRange(n, 1, 1, width).setValues([rowFn(r, existing[n - 2], n)]);
-    } else if (n) {                       // 同じ貼り付け内の重複 → 追加分を上書き
-      added[n - last - 1] = rowFn(r, added[n - last - 1], n);
-    } else {
-      n = last + 1 + added.length;
-      rowOf[key] = n;
-      added.push(rowFn(r, null, n));
-    }
-  });
-  if (added.length) sh.getRange(last + 1, 1, added.length, width).setValues(added);
-}
-
-function append_(ss, name, rowFns) {
-  if (!rowFns.length) return;
-  var sh = ss.getSheetByName(name);
-  var start = sh.getLastRow() + 1;
-  var rows = rowFns.map(function (f, i) { return f(start + i); });
-  sh.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
 }
 
 // ---------------------------------------------------------------- 共有URL（Googleフォーム）で自動取り込み
