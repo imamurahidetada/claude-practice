@@ -275,7 +275,9 @@ function stockLayout_(sh) {
   var names = sh.getRange(FIRST_ROW, 3, 60, 1).getValues().map(function (r) { return String(r[0]).trim(); });
   var end = names.indexOf('商品合計');
   if (end < 0) throw new Error('在庫管理表に「商品合計」行が見つかりません');
-  return { names: names, count: end, salesRow: FIRST_ROW + end + 2, start: sh.getRange('B2').getValue() };
+  var start = asDate_(sh.getRange('B2').getValue());
+  if (!start) throw new Error('在庫管理表の開始日(B2)が読み取れません');
+  return { names: names, count: end, salesRow: FIRST_ROW + end + 2, start: start };
 }
 
 function dayBlock_(layout, dateStr) {
@@ -344,13 +346,14 @@ function createStoreFile_(hq, row) {
   var ev = hq.getSheetByName(SHEET.EVENT);
   var v = ev.getRange(row, 1, 1, 5).getValues()[0];          // 催事名,場所,開始日,終了日,出店料率
   var tz = hq.getSpreadsheetTimeZone();
-  var year = Utilities.formatDate(v[2] instanceof Date ? v[2] : new Date(), tz, 'yyyy');
+  var startDate = asDate_(v[2]), endDate = asDate_(v[3]);
+  var year = Utilities.formatDate(startDate || new Date(), tz, 'yyyy');
   var copy = DriveApp.getFileById(templateId).makeCopy(v[0] + ' ' + year, DriveApp.getFolderById(folderId));
   var store = SpreadsheetApp.openById(copy.getId());
   var st = store.getSheetByName(STORE.STOCK);
   st.getRange('B1').setValue(v[0]);
-  st.getRange('B2').setValue(v[2]);
-  store.getSheetByName(STORE.EVENT).getRange('A2:E2').setValues([[v[0], v[1], v[2], v[3], v[4]]]);
+  st.getRange('B2').setValue(startDate || v[2]);
+  store.getSheetByName(STORE.EVENT).getRange('A2:E2').setValues([[v[0], v[1], startDate || v[2], endDate || v[3], v[4]]]);
   ev.getRange(row, 6).setValue(copy.getId());
   return copy.getId();
 }
@@ -422,6 +425,13 @@ function col_(ss, name, c) {
   var n = sh.getLastRow() - 1;
   if (n < 1) return [];
   return sh.getRange(2, c, n, 1).getValues().map(function (r) { return String(r[0]).trim(); }).filter(Boolean);
+}
+
+/** Date か 'yyyy-mm-dd' 文字列を Date にする（読めなければ null） */
+function asDate_(v) {
+  if (v instanceof Date) return v;
+  var m = String(v).match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
 }
 
 function toDate_(s) { var p = s.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); }
