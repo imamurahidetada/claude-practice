@@ -1,11 +1,16 @@
 /**
- * OKBAGEL 経営管理 運用版 — 報告文の自動取り込み
+ * OKBAGEL 経営管理 — 催事ごとの店舗ファイルへ報告文を自動入力し、年次まとめに吸い上げる
  *
- * 使い方:
- *  1. 運用版スプレッドシート → 拡張機能 → Apps Script に、このファイルを貼り付けて保存
- *  2. スプレッドシートを開き直すとメニュー「経営管理」が出る
- *  3. 「取り込み」タブのA4に報告文を貼る → 経営管理 → 取り込み実行
- *  4. 共有URLで自動入力したい場合は 経営管理 → フォーム自動取込セットアップ（初回のみ）
+ * 構成:
+ *   年次まとめ（このスクリプトを入れるファイル）… 催事マスタ / 商品マスタ / 店舗データ / 催事別集計 / 取り込み / 取込ログ / 設定
+ *   店舗ファイル（催事ごとに1つ。テンプレートのコピー）… 日次在庫 / 日次売上 / 人件費 / 使用経費 / 領収書 / 集計用
+ *
+ * 初回の使い方:
+ *  1. 年次まとめ → 拡張機能 → Apps Script に、このファイルを貼り付けて保存
+ *  2. シートを開き直すとメニュー「経営管理」が出る
+ *  3. 「店舗ファイルを作成」→ 催事マスタの各催事のファイルがフォルダに作られる（初回は権限の承認が出る）
+ *  4. 「取り込み」タブのA4に報告文を貼る → 経営管理 → 取り込み実行
+ *  5. 共有URLで自動入力したい場合は「フォーム自動取込セットアップ」、毎日の吸い上げは「毎日自動吸い上げを設定」
  */
 
 var SHEET = {
@@ -17,7 +22,9 @@ var SHEET = {
   LABOR: '人件費',
   EXPENSE: '使用経費',
   RECEIPT: '領収書',
-  LOG: '取込ログ'
+  LOG: '取込ログ',
+  SETTINGS: '設定',
+  STOREDATA: '店舗データ'
 };
 
 // ---------------------------------------------------------------- 文章の解析（純粋関数）
@@ -150,7 +157,11 @@ function parseReport(text, ctx) {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('経営管理')
     .addItem('取り込み実行', 'runImport')
+    .addItem('店舗ファイルを作成（催事マスタの新しい行）', 'createStoreFiles')
+    .addItem('店舗データを吸い上げ（全催事）', 'pullAll')
+    .addSeparator()
     .addItem('フォーム自動取込セットアップ（初回のみ）', 'setupForm')
+    .addItem('毎日自動吸い上げを設定（初回のみ）', 'setupDailyPull')
     .addToUi();
 }
 
@@ -173,31 +184,64 @@ function onFormSubmit(e) {
 }
 
 function importText(text) {
-  var ss = SpreadsheetApp.getActive();
-  var tz = ss.getSpreadsheetTimeZone();
+  var hq = SpreadsheetApp.getActive();
+  var tz = hq.getSpreadsheetTimeZone();
+  var props = PropertiesService.getDocumentProperties();
   var ctx = {
     year: Number(Utilities.formatDate(new Date(), tz, 'yyyy')),
-    events: col_(ss, SHEET.EVENT, 1),
-    products: col_(ss, SHEET.PRODUCT, 1),
-    lastWage: lastWages_(ss)
+    events: col_(hq, SHEET.EVENT, 1),
+    products: col_(hq, SHEET.PRODUCT, 1),
+    lastWage: JSON.parse(props.getProperty('lastWage') || '{}')
   };
   var res = parseReport(text, ctx);
-  var ok = res.records.length, ng = res.errors.length;
-  var log = [];
-  var now = new Date();
+  props.setProperty('lastWage', JSON.stringify(ctx.lastWage));
 
+  // 催事ごとにまとめて、その店舗ファイルへ書き込む
+  var byEvent = {};
+  res.records.forEach(function (r) { (byEvent[r.event] = byEvent[r.event] || []).push(r); });
+
+  var log = [], now = new Date(), touched = [], ok = 0, ng = res.errors.length;
+  Object.keys(byEvent).forEach(function (event) {
+    var recs = byEvent[event];
+    try {
+      writeToStore_(openStore_(hq, event), recs, tz);
+      touched.push(event);
+      ok += recs.length;
+      recs.forEach(function (r) { log.push([now, r.type, r.src, 'OK', event]); });
+    } catch (e) {
+      ng += recs.length;
+      var m = '店舗ファイルへの書き込みに失敗: ' + e.message;
+      res.errors.push({ line: event + ' の ' + recs.length + ' 行', msg: m });
+      recs.forEach(function (r) { log.push([now, r.type, r.src, 'エラー', m]); });
+    }
+  });
+  res.errors.forEach(function (x) { if (x.msg.indexOf('店舗ファイルへ') !== 0) log.push([now, '', x.line, 'エラー', x.msg]); });
+
+  if (log.length) {
+    var ls = hq.getSheetByName(SHEET.LOG);
+    ls.getRange(ls.getLastRow() + 1, 1, log.length, 5).setValues(log);
+  }
+  if (touched.length) pullStoreData_(hq, touched);
+
+  var msg = '取り込み完了: 成功 ' + ok + ' 行 / エラー ' + ng + ' 行';
+  if (res.errors.length) msg += '\n' + res.errors.map(function (x) { return '・' + x.line + ' → ' + x.msg; }).join('\n');
+  return msg;
+}
+
+/** 1つの店舗ファイルに、その催事の記録を書き込む */
+function writeToStore_(store, recs, tz) {
   var by = { sales: [], stock: [], labor: [], expense: [], receipt: [] };
-  res.records.forEach(function (r) { by[r.type].push(r); });
+  recs.forEach(function (r) { by[r.type].push(r); });
 
-  upsert_(ss, SHEET.SALES, by.sales, 5, [0, 1], function (r) {
-    return [dateKey_(r.date), r.event];
+  upsert_(store, SHEET.SALES, by.sales, 5, [0, 1], function (r) {
+    return [r.date, r.event];
   }, function (r, row) {
     return [toDate_(r.date), r.event,
       r.ex !== null ? r.ex : (row ? row[2] : ''), r.inc !== null ? r.inc : (row ? row[3] : ''), (row ? row[4] : '')];
   }, tz);
 
-  upsert_(ss, SHEET.STOCK, by.stock, 12, [0, 1, 2], function (r) {
-    return [dateKey_(r.date), r.event, r.product];
+  upsert_(store, SHEET.STOCK, by.stock, 12, [0, 1, 2], function (r) {
+    return [r.date, r.event, r.product];
   }, function (r, row, n) {
     var o = row || [];
     var pick = function (v, i) { return v !== null ? v : (o[i] !== undefined ? o[i] : ''); };
@@ -209,8 +253,8 @@ function importText(text) {
       '=IF(OR(G' + n + '="",J' + n + '=""),"",G' + n + '*J' + n + ')'];
   }, tz);
 
-  upsert_(ss, SHEET.LABOR, by.labor, 11, [0, 1, 2], function (r) {
-    return [dateKey_(r.date), r.name, r.event];
+  upsert_(store, SHEET.LABOR, by.labor, 11, [0, 1, 2], function (r) {
+    return [r.date, r.name, r.event];
   }, function (r, row, n) {
     return [toDate_(r.date), r.name, r.event, r.start, r.end, r.rest,
       '=IF(OR(D' + n + '="",E' + n + '=""),"",MOD(E' + n + '-D' + n + ',1)*24-F' + n + '/60)',
@@ -218,14 +262,14 @@ function importText(text) {
       '=IF(OR(G' + n + '="",H' + n + '=""),"",G' + n + '*H' + n + '+N(I' + n + ')+N(J' + n + '))'];
   }, tz);
 
-  append_(ss, SHEET.EXPENSE, by.expense.map(function (r) {
+  append_(store, SHEET.EXPENSE, by.expense.map(function (r) {
     return function (n) {
       return [toDate_(r.date), r.event, r.item, r.note, r.amount,
         '=IF(OR(C' + n + '="宿泊費",C' + n + '="交通費"),ROUND(E' + n + '/1.1,0),E' + n + ')'];
     };
   }));
 
-  append_(ss, SHEET.RECEIPT, by.receipt.map(function (r) {
+  append_(store, SHEET.RECEIPT, by.receipt.map(function (r) {
     return function (n) {
       return [toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate,
         '=IF(OR(E' + n + '="",F' + n + '=""),"",E' + n + '*F' + n + ')',
@@ -233,18 +277,99 @@ function importText(text) {
         '=IF(A' + n + '="","",MONTH(A' + n + '))'];
     };
   }));
+}
 
-  // ログ
-  res.records.forEach(function (r) { log.push([now, r.type, r.src, 'OK', '']); });
-  res.errors.forEach(function (x) { log.push([now, '', x.line, 'エラー', x.msg]); });
-  if (log.length) {
-    var ls = ss.getSheetByName(SHEET.LOG);
-    ls.getRange(ls.getLastRow() + 1, 1, log.length, 5).setValues(log);
-  }
+// ---------------------------------------------------------------- 店舗ファイルの作成・取得
 
-  var msg = '取り込み完了: 成功 ' + ok + ' 行 / エラー ' + ng + ' 行';
-  if (ng) msg += '\n' + res.errors.map(function (x) { return '・' + x.line + ' → ' + x.msg; }).join('\n');
-  return msg;
+/** 催事マスタの行（2始まり）を探す */
+function eventRow_(hq, event) {
+  var sh = hq.getSheetByName(SHEET.EVENT);
+  var names = sh.getRange(2, 1, Math.max(sh.getLastRow() - 1, 1), 1).getValues();
+  for (var i = 0; i < names.length; i++) if (String(names[i][0]).trim() === event) return i + 2;
+  throw new Error('催事マスタに「' + event + '」がありません');
+}
+
+function openStore_(hq, event) {
+  var row = eventRow_(hq, event);
+  var id = hq.getSheetByName(SHEET.EVENT).getRange(row, 6).getValue();
+  if (!id) id = createStoreFile_(hq, row);
+  return SpreadsheetApp.openById(String(id));
+}
+
+/** テンプレートをコピーして店舗ファイルを作り、催事マスタにIDを記録する */
+function createStoreFile_(hq, row) {
+  var settings = hq.getSheetByName(SHEET.SETTINGS);
+  var templateId = settings.getRange('B1').getValue();
+  var folderId = settings.getRange('B2').getValue();
+  var ev = hq.getSheetByName(SHEET.EVENT);
+  var v = ev.getRange(row, 1, 1, 5).getValues()[0];          // 催事名,場所,開始日,終了日,出店料率
+  var tz = hq.getSpreadsheetTimeZone();
+  var year = Utilities.formatDate(v[2] instanceof Date ? v[2] : new Date(), tz, 'yyyy');
+  var copy = DriveApp.getFileById(templateId).makeCopy(v[0] + ' ' + year, DriveApp.getFolderById(folderId));
+  var st = SpreadsheetApp.openById(copy.getId()).getSheetByName(SHEET.SETTINGS);
+  st.getRange('B1:B5').setValues([[v[0]], [v[4]], [v[1]], [v[2]], [v[3]]]);
+  ev.getRange(row, 6).setValue(copy.getId());
+  return copy.getId();
+}
+
+/** メニュー: 店舗ファイルが未作成の催事すべてに作る */
+function createStoreFiles() {
+  var hq = SpreadsheetApp.getActive();
+  var sh = hq.getSheetByName(SHEET.EVENT);
+  var n = sh.getLastRow() - 1;
+  if (n < 1) return;
+  var vals = sh.getRange(2, 1, n, 6).getValues();
+  var made = [];
+  vals.forEach(function (r, i) {
+    if (r[0] && !r[5]) { createStoreFile_(hq, i + 2); made.push(r[0]); }
+  });
+  SpreadsheetApp.getUi().alert(made.length ? '店舗ファイルを作成しました:\n' + made.join('\n') : '作成が必要な催事はありません');
+}
+
+// ---------------------------------------------------------------- 年次まとめへの吸い上げ
+
+function pullAll() {
+  var n = pullStoreData_(SpreadsheetApp.getActive(), null);
+  try { SpreadsheetApp.getUi().alert('吸い上げ完了: ' + n + ' 店舗'); } catch (e) { /* トリガー実行時は画面なし */ }
+}
+
+/** 各店舗ファイルの「集計用」1行を、店舗データに値として書く（events=null なら全催事） */
+function pullStoreData_(hq, events) {
+  var ev = hq.getSheetByName(SHEET.EVENT);
+  var n = ev.getLastRow() - 1;
+  if (n < 1) return 0;
+  var master = ev.getRange(2, 1, n, 6).getValues();
+  var data = hq.getSheetByName(SHEET.STOREDATA);
+  var last = data.getLastRow();
+  var existing = last > 1 ? data.getRange(2, 1, last - 1, 1).getValues() : [];
+  var rowOf = {};
+  existing.forEach(function (r, i) { rowOf[String(r[0])] = i + 2; });
+  var now = new Date(), count = 0, nextRow = last + 1;
+
+  master.forEach(function (m) {
+    var name = String(m[0]).trim(), id = m[5];
+    if (!name || !id) return;
+    if (events && events.indexOf(name) < 0) return;
+    var vals;
+    try {
+      vals = SpreadsheetApp.openById(String(id)).getSheetByName('集計用').getRange('A2:G2').getValues()[0];
+    } catch (e) { return; }
+    vals[0] = name;
+    var row = vals.concat([now]);
+    var at = rowOf[name];
+    if (!at) { at = nextRow++; rowOf[name] = at; }
+    data.getRange(at, 1, 1, 8).setValues([row]);
+    count++;
+  });
+  return count;
+}
+
+function setupDailyPull() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'pullAll') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('pullAll').timeBased().everyDays(1).atHour(3).create();
+  SpreadsheetApp.getUi().alert('毎日午前3時ごろに全店舗を吸い上げる設定をしました');
 }
 
 // ---------------------------------------------------------------- 補助
@@ -256,16 +381,7 @@ function col_(ss, name, c) {
   return sh.getRange(2, c, n, 1).getValues().map(function (r) { return String(r[0]).trim(); }).filter(Boolean);
 }
 
-function lastWages_(ss) {
-  var sh = ss.getSheetByName(SHEET.LABOR);
-  var n = sh.getLastRow() - 1, out = {};
-  if (n < 1) return out;
-  sh.getRange(2, 1, n, 8).getValues().forEach(function (r) { if (r[1] && r[7]) out[r[1]] = r[7]; });
-  return out;
-}
-
 function toDate_(s) { var p = s.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); }
-function dateKey_(s) { return s; }
 function cellKey_(v, tz) {
   return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(v).trim();
 }
@@ -314,7 +430,7 @@ function append_(ss, name, rowFns) {
 function setupForm() {
   var ss = SpreadsheetApp.getActive();
   var form = FormApp.create('OKBAGEL 報告文の送信');
-  form.setDescription('LINEなどで共有する報告文をそのまま貼り付けて送信してください。送信すると経営管理シートに自動で入力されます。');
+  form.setDescription('LINEなどで共有する報告文をそのまま貼り付けて送信してください。送信すると該当する催事の店舗ファイルに自動で入力されます。');
   form.addParagraphTextItem().setTitle('報告文').setRequired(true);
   form.setDestination(FormApp.DestinationType.SPREADSHEET, ss.getId());
   ScriptApp.newTrigger('onFormSubmit').forSpreadsheet(ss).onFormSubmit().create();
