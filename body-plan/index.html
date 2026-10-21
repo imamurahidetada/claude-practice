@@ -45,6 +45,9 @@ input[type=date],input[type=number],input[type=text]{padding:8px;border:1px soli
 .t{font-weight:600;cursor:pointer}
 .d{font-size:.85rem;color:var(--sub);margin-top:2px;display:none;white-space:pre-line}
 .task.open .d{display:block}
+.vids{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;align-items:center;white-space:normal}
+.vids span{font-size:.75rem}
+.vids a{font-size:.78rem;padding:2px 10px;border:1px solid var(--line);border-radius:99px;color:var(--accent);text-decoration:none;background:var(--bg)}
 .tag{display:inline-block;font-size:.7rem;color:#fff;border-radius:6px;padding:0 6px;margin-right:6px;vertical-align:1px}
 .filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
 .chip{padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:.8rem;cursor:pointer}
@@ -200,7 +203,20 @@ function buildPlan(){
   }
   return plan;
 }
-var PLAN=buildPlan();
+var VIDS={
+ '朝の姿勢リセット':['骨盤ティルト','腸腰筋ストレッチ','壁立ち 姿勢チェック'],
+ '胸ストレッチ':['胸ストレッチ ドア 巻き肩'],
+ '就寝前ストレッチ':['チャイルドポーズ','キャットアンドカウ','膝抱え ストレッチ'],
+ '腹筋・体幹A':['ドローイン','デッドバグ','リバースクランチ','ベントニーレッグレイズ','フロントプランク 正しいフォーム'],
+ '下半身・反張膝ケア':['ヒップヒンジ','グルートブリッジ','ハムストリング ブリッジ','スプリットスクワット','カーフレイズ','反張膝 改善'],
+ '有酸素＋全身ストレッチ':['腸腰筋ストレッチ','ハムストリング ストレッチ','ふくらはぎ ストレッチ'],
+ '背中・巻き肩改善':['チューブ ローイング','ウォールエンジェル','うつ伏せ YTW 肩甲骨','フェイスプル','サイドプランク'],
+ '全身サーキット':['スクワット 正しいフォーム','膝つき プッシュアップ','バードドッグ','マウンテンクライマー','フロントプランク 正しいフォーム'],
+ '休養・ヨガ':['初心者 ヨガ 15分','キャットアンドカウ','チャイルドポーズ']
+};
+PLAN.forEach(function(day){day.forEach(function(t){
+  for(var k in VIDS){if(t.title.indexOf(k)===0){t.vids=VIDS[k];break;}}
+});});
 
 var GUIDE=[
  ['反り腰（骨盤前傾）','原因：腸腰筋・太もも前の硬さ／腹筋とお尻の弱さ。',
@@ -250,6 +266,12 @@ function renderHeader(){
   $('sStreak').textContent=streak+'日';
   $('dayLabel').textContent=t<0?(-t)+'日後に開始':t>27?'プラン終了':(t+1)+'日目 / 28';
 }
+function vidLinks(v){
+  if(!v)return '';
+  return '<div class="vids"><span>動画で見る</span>'+v.map(function(q){
+    return '<a href="https://www.youtube.com/results?search_query='+encodeURIComponent(q+' やり方')+'" target="_blank" rel="noopener">▶ '+esc(q)+'</a>';
+  }).join('')+'</div>';
+}
 function renderToday(){
   var w=WEEKS[Math.floor(cur/7)],date=addDays(parse(S.start),cur);
   $('weekCard').innerHTML='<div class="sub">第'+(Math.floor(cur/7)+1)+'週</div><h2>'+esc(w.theme)+'</h2><div class="sub" style="color:var(--text)">'+esc(w.goal)+'</div>';
@@ -268,7 +290,7 @@ function renderToday(){
     var c=CATS[t.cat];
     html+='<div class="task'+(S.done[t.id]?' done':'')+'" data-id="'+t.id+'"><input type="checkbox" '+(S.done[t.id]?'checked':'')+' aria-label="完了">'+
       '<div class="grow"><div class="t"><span class="tag" style="background:var('+c[1]+')">'+c[0]+'</span>'+esc(t.title)+'</div>'+
-      (t.detail?'<div class="d">'+esc(t.detail)+'</div>':'')+
+      (t.detail?'<div class="d">'+esc(t.detail)+vidLinks(t.vids)+'</div>':'')+
       (t.custom?'<button class="btn danger" data-del="'+t.id+'" style="padding:0 8px;margin-top:4px;font-size:.75rem">削除</button>':'')+'</div></div>';
   });
   $('tasks').innerHTML=html||'<div class="sub">該当するタスクはありません</div>';
