@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>姿勢改善＆腹筋ダイエット 28日プラン</title>
+<style>
+:root{
+  --bg:#f6f7f9;--card:#fff;--text:#1f2933;--sub:#6b7785;--line:#e3e7ec;
+  --accent:#0f9d8a;--accent-soft:#dff5f1;--warn:#c2410c;
+  --posture:#6366f1;--core:#ef4444;--lower:#f59e0b;--upper:#0ea5e9;--cardio:#10b981;--life:#8b5cf6;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#12161b;--card:#1b2128;--text:#e8ecf0;--sub:#9aa7b4;--line:#2b343e;--accent:#2dd4bf;--accent-soft:#12332f;--warn:#fb923c}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.6}
+.wrap{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:1.2rem;margin:0 0 4px}
+h2{font-size:1.05rem;margin:0 0 8px}
+.sub{color:var(--sub);font-size:.85rem}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.grow{flex:1}
+.bar{height:10px;background:var(--line);border-radius:99px;overflow:hidden}
+.bar>i{display:block;height:100%;background:var(--accent);border-radius:99px;transition:width .3s}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+.stat{text-align:center;background:var(--bg);border-radius:10px;padding:8px 4px}
+.stat b{display:block;font-size:1.15rem}
+.tabs{display:flex;gap:4px;margin:12px 0;position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:5}
+.tabs button{flex:1;padding:10px 4px;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;font-size:.9rem;cursor:pointer}
+.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700}
+button,input,textarea{font:inherit;color:inherit}
+.btn{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);cursor:pointer}
+.btn.pri{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.danger{color:var(--warn)}
+input[type=date],input[type=number],input[type=text]{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--card);min-width:0}
+.task{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.task:last-child{border-bottom:0}
+.task input[type=checkbox]{width:22px;height:22px;margin-top:2px;accent-color:var(--accent);flex:none}
+.task.done .t{text-decoration:line-through;color:var(--sub)}
+.t{font-weight:600;cursor:pointer}
+.d{font-size:.85rem;color:var(--sub);margin-top:2px;display:none;white-space:pre-line}
+.task.open .d{display:block}
+.tag{display:inline-block;font-size:.7rem;color:#fff;border-radius:6px;padding:0 6px;margin-right:6px;vertical-align:1px}
+.filters{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px}
+.chip{padding:3px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);font-size:.8rem;cursor:pointer}
+.chip.on{background:var(--text);color:var(--bg)}
+.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.week{margin-bottom:14px}
+.grid{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.cell{border:1px solid var(--line);border-radius:10px;padding:6px 2px;text-align:center;background:var(--card);cursor:pointer;font-size:.8rem}
+.cell small{display:block;color:var(--sub);font-size:.65rem}
+.cell.today{outline:2px solid var(--accent)}
+.cell.full{background:var(--accent);color:#fff}.cell.full small{color:#fff}
+.cell.part{background:var(--accent-soft)}
+.guide h3{font-size:.95rem;margin:12px 0 4px}
+.guide ul{margin:4px 0 8px;padding-left:20px;font-size:.88rem}
+.warn{border-color:var(--warn);color:var(--warn);font-size:.85rem}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+td,th{padding:6px 4px;border-bottom:1px solid var(--line);text-align:left}
+svg{width:100%;height:auto}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>姿勢改善＆腹筋ダイエット 28日プラン</h1>
+  <div class="sub">反り腰・反張膝・巻き肩の改善 × 腹筋中心の全身ダイエット</div>
+
+  <div class="card" style="margin-top:12px">
+    <div class="row">
+      <label class="sub">開始日</label>
+      <input type="date" id="start">
+      <span class="grow"></span>
+      <span class="sub" id="dayLabel"></span>
+    </div>
+    <div class="bar" style="margin-top:10px"><i id="allBar"></i></div>
+    <div class="stats">
+      <div class="stat"><b id="sAll">0%</b><span class="sub">全体達成率</span></div>
+      <div class="stat"><b id="sStreak">0日</b><span class="sub">連続達成</span></div>
+      <div class="stat"><b id="sDone">0/0</b><span class="sub">完了タスク</span></div>
+    </div>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button data-tab="today" class="on">今日</button>
+    <button data-tab="plan">カレンダー</button>
+    <button data-tab="log">記録</button>
+    <button data-tab="guide">ガイド</button>
+  </div>
+
+  <section id="tab-today">
+    <div class="card" id="weekCard"></div>
+    <div class="card">
+      <div class="nav">
+        <button class="btn" id="prev">‹ 前日</button>
+        <div style="text-align:center"><h2 id="dayTitle" style="margin:0"></h2><div class="sub" id="dayDate"></div></div>
+        <button class="btn" id="next">翌日 ›</button>
+      </div>
+      <div class="bar"><i id="dayBar"></i></div>
+      <div class="sub" id="dayPct" style="margin:4px 0 8px"></div>
+      <div class="filters" id="filters"></div>
+      <div id="tasks"></div>
+      <form class="row" id="addForm" style="margin-top:10px">
+        <input type="text" id="addText" class="grow" placeholder="この日にタスクを追加（例：整体に行く）" maxlength="80">
+        <button class="btn pri">追加</button>
+      </form>
+    </div>
+  </section>
+
+  <section id="tab-plan" class="hidden"><div id="plan"></div></section>
+
+  <section id="tab-log" class="hidden">
+    <div class="card">
+      <h2>測定を記録</h2>
+      <form class="row" id="logForm">
+        <input type="date" id="logDate" required>
+        <input type="number" id="logW" step="0.1" placeholder="体重 kg" style="width:100px">
+        <input type="number" id="logS" step="0.1" placeholder="ウエスト cm" style="width:110px">
+        <input type="text" id="logN" class="grow" placeholder="メモ（姿勢・体調など）" maxlength="80">
+        <button class="btn pri">保存</button>
+      </form>
+      <div class="sub" style="margin-top:6px">同じ日付は上書きされます。毎週日曜の朝・同じ条件での測定がおすすめです。</div>
+    </div>
+    <div class="card"><h2>推移</h2><div id="chart"></div></div>
+    <div class="card"><h2>履歴</h2><div id="logList"></div></div>
+  </section>
+
+  <section id="tab-guide" class="hidden">
+    <div class="card warn">痛み・しびれ・めまいがある場合は中止してください。持病や強い痛みがある方は、始める前に医師や理学療法士に相談してください。本アプリは一般的な運動の目安であり、医療アドバイスではありません。</div>
+    <div class="card guide" id="guide"></div>
+    <div class="card">
+      <h2>データ管理</h2>
+      <div class="row">
+        <button class="btn" id="exportBtn">バックアップを書き出す</button>
+        <button class="btn danger" id="resetBtn">すべてリセット</button>
+      </div>
+      <div class="sub" style="margin-top:6px">データはこの端末のブラウザ内にのみ保存されます。</div>
+    </div>
+  </section>
+</div>
+
+<script>
+(function(){
+'use strict';
+var KEY='bodyplan.v1';
+var CATS={posture:['姿勢','--posture'],core:['腹筋','--core'],lower:['下半身','--lower'],upper:['背中・肩','--upper'],cardio:['有酸素','--cardio'],life:['生活','--life']};
+var WEEKDAY=['月','火','水','木','金','土','日'];
+
+/* ---------- プラン生成 ---------- */
+var WEEKS=[
+ {theme:'基礎づくり・フォーム習得',goal:'正しい姿勢の感覚をつかむ週。回数より「腰を反らさない・膝を伸ばしきらない・肩をすくめない」を優先。',sets:2,reps:10,plank:20,dead:8,cardio:20,steps:7000},
+ {theme:'習慣化・負荷アップ',goal:'毎日の姿勢リセットを習慣に。セット数を増やして体幹の持久力をつける。',sets:3,reps:10,plank:30,dead:10,cardio:25,steps:8000},
+ {theme:'強度アップ・脂肪燃焼',goal:'回数と時間を伸ばし、有酸素の強度も上げて脂肪燃焼を加速。',sets:3,reps:12,plank:40,dead:12,cardio:30,steps:9000},
+ {theme:'仕上げ・定着',goal:'フォームを崩さず最大負荷で。1ヶ月後も続けられる習慣として定着させる。',sets:3,reps:15,plank:50,dead:12,cardio:35,steps:10000}
+];
+function T(cat,title,detail){return {cat:cat,title:title,detail:detail||''};}
+function workout(wd,w){
+  var s=w.sets,r=w.reps,out=[];
+  switch(wd){
+  case 0:out.push(T('core','腹筋・体幹A（約20分）',
+   '各 '+s+'セット。腰は常に床に軽く押しつけたまま行う。\n① ドローイン（息を吐きながらお腹をへこませる）10秒×'+r+'回\n② デッドバグ 左右各'+w.dead+'回\n③ リバースクランチ '+r+'回\n④ ベントニー・レッグレイズ '+r+'回\n⑤ フロントプランク '+w.plank+'秒（お尻を上げすぎず、腰を反らさない）'));break;
+  case 1:out.push(T('lower','下半身・反張膝ケア（約25分）',
+   '各 '+s+'セット。膝は「伸ばしきらず軽く緩める」意識で。\n① ヒップヒンジ（膝を軽く曲げお尻を後ろに引く）'+r+'回\n② グルートブリッジ '+r+'回（腰ではなくお尻で上げる）\n③ ハムストリング・ブリッジ（かかとを遠くに置く）'+Math.max(6,r-4)+'回\n④ スプリットスクワット 左右各'+Math.max(6,r-2)+'回（前膝をロックしない）\n⑤ カーフレイズ '+(r+5)+'回（足裏全体で体重を支える）'));break;
+  case 2:out.push(T('cardio','有酸素＋全身ストレッチ（'+w.cardio+'分）',
+   'ウォーキングまたはバイクを'+w.cardio+'分。会話できる程度の強度（心拍は最大の60〜70%）。\n終了後に股関節前・もも裏・ふくらはぎ・胸を各30秒ストレッチ。'));break;
+  case 3:out.push(T('upper','背中・巻き肩改善（約20分）',
+   '各 '+s+'セット。肩甲骨を「下げて寄せる」。\n① チューブ（またはタオル）ローイング '+r+'回\n② ウォールエンジェル '+r+'回（腰を壁から浮かせない）\n③ Y・T・W（うつ伏せ） 各'+Math.max(6,r-4)+'回\n④ フェイスプル／リバースフライ '+r+'回\n⑤ サイドプランク 左右各'+Math.round(w.plank*0.6)+'秒'));break;
+  case 4:out.push(T('core','全身サーキット（約30分）',
+   (s)+'周。種目間の休憩は20秒、周回間は60秒。\n① スクワット '+(r+5)+'回\n② 膝つきプッシュアップ '+r+'回\n③ バードドッグ 左右各'+w.dead+'回\n④ マウンテンクライマー '+(w.plank)+'秒\n⑤ プランク '+w.plank+'秒'));break;
+  case 5:out.push(T('cardio','有酸素（'+(w.cardio+10)+'分）',
+   '早歩き・ジョギング・バイクなど。'+(w.steps>=9000?'3分速め＋2分ゆっくりのインターバルを繰り返す。':'一定のペースで無理なく続ける。')+'\n週で一番長めの有酸素日。'));break;
+  case 6:out.push(T('posture','休養・ヨガ（約15分）',
+   '回復日。猫牛・チャイルドポーズ・股関節ストレッチなど軽く動かす。筋肉痛が強ければ完全休養でもOK。'));break;
+  }
+  return out;
+}
+function buildPlan(){
+  var plan=[];
+  for(var d=0;d<28;d++){
+    var wk=Math.floor(d/7),w=WEEKS[wk],wd=d%7,list=[];
+    list.push(T('posture','朝の姿勢リセット（約5分）',
+     '① 壁に後頭部・肩甲骨・お尻・かかとをつけて立ち、腰と壁の隙間が手のひら1枚分か確認（広すぎ＝反り腰）\n② 骨盤ティルト（仰向けで腰を床に押しつける）10回\n③ 腸腰筋ストレッチ 左右30秒\n④ 立つときは膝をロックせず軽く緩め、体重は足裏の真ん中に乗せる（反張膝対策）'));
+    list.push(T('upper','胸ストレッチ（巻き肩ケア）','ドア枠や壁に前腕を当てて胸を開く。30秒×左右3セット。肩をすくめず、腰を反らさない。'));
+    list=list.concat(workout(wd,w));
+    list.push(T('life','歩数 '+w.steps.toLocaleString()+' 歩を目標','エレベーターより階段、1時間に1回立ち上がる。座り姿勢では骨盤を立て、膝を伸ばしきらない。'));
+    list.push(T('life','食事：タンパク質＋水分','毎食手のひら1枚分のタンパク質、水を2L。夜21時以降の食事と甘い飲み物は控える。食事内容をメモすると効果的。'));
+    list.push(T('posture','就寝前ストレッチ（約5分）','チャイルドポーズ1分、猫牛10回、仰向けで膝を抱えて1分。ゆっくり深呼吸。睡眠は7時間を目安に。'));
+    if(d===0)list.push(T('life','【開始日】体重・ウエスト・横向き写真を記録','記録タブに入力。横向き全身写真（反り腰・巻き肩の確認用）も撮っておくと変化が分かる。'));
+    else if(wd===6&&d<27)list.push(T('life','【週次チェック】体重・ウエスト・写真を記録','記録タブに入力。今週できなかった種目と、来週の目標を一言メモ。'));
+    if(d===27)list.push(T('life','【最終チェック】1ヶ月の振り返り','開始日と同条件で体重・ウエスト・写真を記録。変化した点を書き出し、次の1ヶ月の目標を決める。'));
+    plan.push(list.map(function(t,i){t.id='d'+d+'-'+i;return t;}));
+  }
+  return plan;
+}
+var PLAN=buildPlan();
+
+var GUIDE=[
+ ['反り腰（骨盤前傾）','原因：腸腰筋・太もも前の硬さ／腹筋とお尻の弱さ。',
+  ['腸腰筋ストレッチ・骨盤ティルトで前傾をリセット','ドローイン・デッドバグ・プランクで腹圧と腹筋を強化','グルートブリッジでお尻を使えるように','NG：腹筋運動で腰が浮く／プランクで腰が落ちる']],
+ ['反張膝（膝の過伸展）','原因：もも裏・お尻の弱さ、足裏荷重の偏り、膝をロックする立ち方。',
+  ['立つ・歩くとき膝を軽く緩める','ハムストリングス・お尻・ふくらはぎを強化','スクワットやレッグ系種目で膝を伸ばしきらない','NG：膝を後ろに押し込むストレッチ']],
+ ['巻き肩','原因：胸の前側の硬さ、背中（肩甲骨まわり）の弱さ、デスクワーク姿勢。',
+  ['胸ストレッチを毎日','ローイング・ウォールエンジェル・Y/T/Wで肩甲骨を下げて寄せる','スマホ・PCは目線の高さに','NG：肩をすくめたまま肩甲骨を寄せる']],
+ ['ダイエット（腹筋を見せるために）','腹筋は鍛えるだけでは見えず、体脂肪を落とすことが必要です。',
+  ['有酸素＋週5日の筋トレで消費を増やす','タンパク質を体重×1.2〜1.6g目安に','緩やかな摂取カロリー管理（月1〜2kg減が安全な目安）','睡眠不足は食欲を増やすので7時間を確保']],
+ ['進め方のコツ','',
+  ['タスクは詳細を開いて種目と回数を確認（タイトルをタップ）','できない日があっても翌日から再開。80%以上で「達成日」','フォームが崩れたら回数を減らして正しい動きを優先']]
+];
+
+/* ---------- 状態 ---------- */
+function today0(){var n=new Date();return new Date(n.getFullYear(),n.getMonth(),n.getDate());}
+function iso(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
+function parse(s){var p=s.split('-');return new Date(+p[0],+p[1]-1,+p[2]);}
+function addDays(d,n){return new Date(d.getFullYear(),d.getMonth(),d.getDate()+n);}
+function diffDays(a,b){return Math.round((Date.UTC(a.getFullYear(),a.getMonth(),a.getDate())-Date.UTC(b.getFullYear(),b.getMonth(),b.getDate()))/864e5);}
+
+var S;
+function load(){try{S=JSON.parse(localStorage.getItem(KEY));}catch(e){S=null;}
+  if(!S||typeof S!=='object')S={};
+  S.start=S.start||iso(today0());S.done=S.done||{};S.custom=S.custom||{};S.logs=S.logs||[];}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(S));}catch(e){}}
+load();
+
+var cur=0,filter='all',tab='today';
+function todayIdx(){var i=diffDays(today0(),parse(S.start));return Math.min(27,Math.max(0,i));}
+cur=todayIdx();
+
+function dayTasks(d){return PLAN[d].concat((S.custom[d]||[]).map(function(c){return {id:c.id,title:c.title,cat:'life',detail:'',custom:true};}));}
+function dayStat(d){var l=dayTasks(d),n=0;l.forEach(function(t){if(S.done[t.id])n++;});return {done:n,total:l.length,pct:l.length?n/l.length:0};}
+
+/* ---------- 描画 ---------- */
+var $=function(id){return document.getElementById(id);};
+function esc(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+
+function renderHeader(){
+  var done=0,total=0;
+  for(var d=0;d<28;d++){var s=dayStat(d);done+=s.done;total+=s.total;}
+  var pct=total?Math.round(done/total*100):0;
+  $('allBar').style.width=pct+'%';$('sAll').textContent=pct+'%';$('sDone').textContent=done+'/'+total;
+  var t=diffDays(today0(),parse(S.start)),streak=0;
+  for(var i=Math.min(27,t);i>=0;i--){ if(i===t&&dayStat(i).pct<0.8)continue; if(dayStat(i).pct>=0.8)streak++;else break; }
+  $('sStreak').textContent=streak+'日';
+  $('dayLabel').textContent=t<0?(-t)+'日後に開始':t>27?'プラン終了':(t+1)+'日目 / 28';
+}
+function renderToday(){
+  var w=WEEKS[Math.floor(cur/7)],date=addDays(parse(S.start),cur);
+  $('weekCard').innerHTML='<div class="sub">第'+(Math.floor(cur/7)+1)+'週</div><h2>'+esc(w.theme)+'</h2><div class="sub" style="color:var(--text)">'+esc(w.goal)+'</div>';
+  $('dayTitle').textContent=(cur+1)+'日目（'+WEEKDAY[cur%7]+'）';
+  $('dayDate').textContent=date.getFullYear()+'/'+(date.getMonth()+1)+'/'+date.getDate();
+  var st=dayStat(cur);
+  $('dayBar').style.width=Math.round(st.pct*100)+'%';
+  $('dayPct').textContent=st.done+' / '+st.total+' 完了（'+Math.round(st.pct*100)+'%）';
+  $('prev').disabled=cur===0;$('next').disabled=cur===27;
+  var f='<button class="chip'+(filter==='all'?' on':'')+'" data-f="all">すべて</button>';
+  Object.keys(CATS).forEach(function(k){f+='<button class="chip'+(filter===k?' on':'')+'" data-f="'+k+'">'+CATS[k][0]+'</button>';});
+  $('filters').innerHTML=f;
+  var html='';
+  dayTasks(cur).forEach(function(t){
+    if(filter!=='all'&&t.cat!==filter)return;
+    var c=CATS[t.cat];
+    html+='<div class="task'+(S.done[t.id]?' done':'')+'" data-id="'+t.id+'"><input type="checkbox" '+(S.done[t.id]?'checked':'')+' aria-label="完了">'+
+      '<div class="grow"><div class="t"><span class="tag" style="background:var('+c[1]+')">'+c[0]+'</span>'+esc(t.title)+'</div>'+
+      (t.detail?'<div class="d">'+esc(t.detail)+'</div>':'')+
+      (t.custom?'<button class="btn danger" data-del="'+t.id+'" style="padding:0 8px;margin-top:4px;font-size:.75rem">削除</button>':'')+'</div></div>';
+  });
+  $('tasks').innerHTML=html||'<div class="sub">該当するタスクはありません</div>';
+}
+function renderPlan(){
+  var h='',t=diffDays(today0(),parse(S.start));
+  WEEKS.forEach(function(w,wk){
+    h+='<div class="card week"><div class="sub">第'+(wk+1)+'週</div><h2>'+esc(w.theme)+'</h2><div class="sub" style="margin-bottom:8px">'+esc(w.goal)+'</div><div class="grid">';
+    for(var i=0;i<7;i++){
+      var d=wk*7+i,s=dayStat(d),dt=addDays(parse(S.start),d);
+      h+='<div class="cell'+(s.pct>=0.8?' full':s.done?' part':'')+(d===t?' today':'')+'" data-day="'+d+'"><small>'+WEEKDAY[i]+'</small><b>'+(dt.getMonth()+1)+'/'+dt.getDate()+'</b><small>'+Math.round(s.pct*100)+'%</small></div>';
+    }
+    h+='</div></div>';
+  });
+  $('plan').innerHTML=h;
+}
+function renderLog(){
+  var logs=S.logs.slice().sort(function(a,b){return a.date<b.date?-1:1;});
+  var h='';
+  if(!logs.length)h='<div class="sub">まだ記録がありません</div>';
+  else{
+    h='<table><tr><th>日付</th><th>体重</th><th>ウエスト</th><th>メモ</th><th></th></tr>';
+    logs.slice().reverse().forEach(function(l){
+      h+='<tr><td>'+esc(l.date)+'</td><td>'+(l.w!=null?l.w+'kg':'-')+'</td><td>'+(l.s!=null?l.s+'cm':'-')+'</td><td>'+esc(l.n||'')+'</td><td><button class="btn danger" data-ldel="'+esc(l.date)+'" style="padding:0 8px">×</button></td></tr>';
+    });
+    h+='</table>';
+  }
+  $('logList').innerHTML=h;
+  $('chart').innerHTML=chart(logs);
+}
+function series(logs,key,color,label,W,H,pad){
+  var pts=logs.filter(function(l){return l[key]!=null;});
+  if(pts.length<1)return '';
+  var vals=pts.map(function(p){return p[key];}),mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
+  if(mn===mx){mn-=1;mx+=1;}
+  var t0=parse(logs[0].date).getTime(),t1=parse(logs[logs.length-1].date).getTime()||t0+1;if(t1===t0)t1=t0+864e5;
+  var xy=pts.map(function(p){return [pad+(parse(p.date).getTime()-t0)/(t1-t0)*(W-pad*2),H-pad-(p[key]-mn)/(mx-mn)*(H-pad*2)];});
+  var g='<polyline fill="none" stroke="'+color+'" stroke-width="2" points="'+xy.map(function(p){return p.join(',');}).join(' ')+'"/>';
+  xy.forEach(function(p){g+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="3" fill="'+color+'"/>';});
+  var last=pts[pts.length-1],first=pts[0];
+  return {g:g,text:label+'：'+first[key]+' → '+last[key]+'（'+(last[key]-first[key]>=0?'+':'')+(Math.round((last[key]-first[key])*10)/10)+'）'};
+}
+function chart(logs){
+  if(!logs.length)return '<div class="sub">記録するとグラフが表示されます</div>';
+  var W=600,H=160,pad=14,a=series(logs,'w','var(--accent)','体重(kg)',W,H,pad),b=series(logs,'s','var(--lower)','ウエスト(cm)',W,H,pad),o='';
+  if(a)o+='<div class="sub" style="color:var(--accent)">'+a.text+'</div><svg viewBox="0 0 '+W+' '+H+'">'+a.g+'</svg>';
+  if(b)o+='<div class="sub" style="color:var(--lower)">'+b.text+'</div><svg viewBox="0 0 '+W+' '+H+'">'+b.g+'</svg>';
+  return o||'<div class="sub">体重またはウエストを入力してください</div>';
+}
+function renderGuide(){
+  $('guide').innerHTML=GUIDE.map(function(g){
+    return '<h3>'+esc(g[0])+'</h3>'+(g[1]?'<div class="sub">'+esc(g[1])+'</div>':'')+'<ul>'+g[2].map(function(x){return '<li>'+esc(x)+'</li>';}).join('')+'</ul>';
+  }).join('');
+}
+function renderAll(){renderHeader();renderToday();renderPlan();renderLog();}
+
+/* ---------- イベント ---------- */
+$('start').value=S.start;
+$('start').addEventListener('change',function(e){if(!e.target.value)return;S.start=e.target.value;save();cur=todayIdx();renderAll();});
+$('tabs').addEventListener('click',function(e){
+  var b=e.target.closest('button');if(!b)return;tab=b.dataset.tab;
+  [].forEach.call($('tabs').children,function(x){x.classList.toggle('on',x===b);});
+  ['today','plan','log','guide'].forEach(function(k){$('tab-'+k).classList.toggle('hidden',k!==tab);});
+});
+$('prev').onclick=function(){if(cur>0){cur--;renderToday();}};
+$('next').onclick=function(){if(cur<27){cur++;renderToday();}};
+$('filters').addEventListener('click',function(e){var b=e.target.closest('[data-f]');if(!b)return;filter=b.dataset.f;renderToday();});
+$('tasks').addEventListener('click',function(e){
+  var del=e.target.closest('[data-del]');
+  if(del){var id=del.dataset.del;S.custom[cur]=(S.custom[cur]||[]).filter(function(c){return c.id!==id;});delete S.done[id];save();renderAll();return;}
+  var row=e.target.closest('.task');if(!row)return;
+  if(e.target.type==='checkbox'){
+    if(e.target.checked)S.done[row.dataset.id]=true;else delete S.done[row.dataset.id];
+    save();renderHeader();renderPlan();renderToday();return;
+  }
+  if(e.target.closest('.t'))row.classList.toggle('open');
+});
+$('addForm').addEventListener('submit',function(e){
+  e.preventDefault();var v=$('addText').value.trim();if(!v)return;
+  (S.custom[cur]=S.custom[cur]||[]).push({id:'c'+Date.now(),title:v});
+  $('addText').value='';save();renderAll();
+});
+$('plan').addEventListener('click',function(e){
+  var c=e.target.closest('[data-day]');if(!c)return;cur=+c.dataset.day;renderToday();
+  $('tabs').querySelector('[data-tab=today]').click();window.scrollTo(0,0);
+});
+$('logDate').value=iso(today0());
+$('logForm').addEventListener('submit',function(e){
+  e.preventDefault();
+  var date=$('logDate').value,w=$('logW').value,s=$('logS').value;
+  if(!date||(w===''&&s===''&&!$('logN').value.trim()))return;
+  S.logs=S.logs.filter(function(l){return l.date!==date;});
+  S.logs.push({date:date,w:w===''?null:parseFloat(w),s:s===''?null:parseFloat(s),n:$('logN').value.trim()});
+  $('logW').value='';$('logS').value='';$('logN').value='';save();renderLog();
+});
+$('logList').addEventListener('click',function(e){
+  var b=e.target.closest('[data-ldel]');if(!b)return;
+  S.logs=S.logs.filter(function(l){return l.date!==b.dataset.ldel;});save();renderLog();
+});
+$('exportBtn').onclick=function(){
+  var blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'}),a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download='body-plan-backup.json';a.click();URL.revokeObjectURL(a.href);
+};
+$('resetBtn').onclick=function(){
+  if(!confirm('チェック状態・追加タスク・記録をすべて削除します。よろしいですか？'))return;
+  S={};try{localStorage.removeItem(KEY);}catch(e){}load();$('start').value=S.start;cur=todayIdx();renderAll();
+};
+
+renderGuide();renderAll();
+})();
+</script>
+</body>
+</html>
