@@ -26,13 +26,12 @@ var SHEET = {
 // 店舗ファイル側のタブ（元の「在庫管理表」と同じ形）
 var STORE = {
   STOCK: '在庫管理表',          // 日ごとに8列ブロックが横に並ぶ（E列から）
-  LABOR: '人件費（本部専用）',
-  EXPENSE: '使用経費（本部専用）',
-  RECEIPT: '領収書（立替経費）',
-  EVENT: '催事マスタ（本部専用）',
+  LABOR: '人件費',              // A日付 B氏名 C出勤 D退勤 E休憩 F労働時間(式) G時給 H交通費(証あり) I交通費(証なし) J総支給(式)
+  EXPENSE: '使用経費',          // A日付 B経費項目 C内容 D入力金額 E税抜金額(式)
+  RECEIPT: '領収書',            // A使用日 B使用者 C項目 D購入場所 E税抜 F税率 G消費税(式) H税込(式) I月(式)
   SUMMARY: '集計用'
 };
-var DAYS = 31;          // 在庫管理表の日数ブロック数
+var DAYS = 31;          // 在庫管理表にある日数ブロックの最大数（使う日数は D1 に入り、残りは非表示）
 var FIRST_ROW = 7;      // 商品の1行目
 var FIRST_COL = 5;      // 1日目ブロックの先頭列（E）
 
@@ -167,6 +166,7 @@ function onOpen() {
   SpreadsheetApp.getUi().createMenu('経営管理')
     .addItem('取り込み実行', 'runImport')
     .addItem('店舗ファイルを作成（催事マスタの新しい行）', 'createStoreFiles')
+    .addItem('日数・出店料率を店舗ファイルに反映', 'updateDays')
     .addItem('店舗データを吸い上げ（全催事）', 'pullAll')
     .addSeparator()
     .addItem('フォーム自動取込セットアップ（初回のみ）', 'setupForm')
@@ -259,13 +259,12 @@ function writeToStore_(store, recs, tz) {
   by.expense.forEach(function (r) {
     var s2 = store.getSheetByName(STORE.EXPENSE);
     var n = firstEmpty_(s2, 1, 2, 300);
-    s2.getRange(n, 1, 1, 5).setValues([[toDate_(r.date), r.event, r.item, r.note, r.amount]]);
+    s2.getRange(n, 1, 1, 4).setValues([[toDate_(r.date), r.item, r.note, r.amount]]);
   });
   by.receipt.forEach(function (r) {
     var s3 = store.getSheetByName(STORE.RECEIPT);
     var n = firstEmpty_(s3, 1, 2, 300);
     s3.getRange(n, 1, 1, 6).setValues([[toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate]]);
-    s3.getRange(n, 9).setValue(r.event);
   });
   return errors;
 }
@@ -277,12 +276,15 @@ function stockLayout_(sh) {
   if (end < 0) throw new Error('在庫管理表に「商品合計」行が見つかりません');
   var start = asDate_(sh.getRange('B2').getValue());
   if (!start) throw new Error('在庫管理表の開始日(B2)が読み取れません');
-  return { names: names, count: end, salesRow: FIRST_ROW + end + 2, start: start };
+  var days = Number(sh.getRange('D1').getValue()) || DAYS;
+  return { names: names, count: end, salesRow: FIRST_ROW + end + 2, start: start, days: days };
 }
 
 function dayBlock_(layout, dateStr) {
   var k = Math.round((toDate_(dateStr) - layout.start) / 86400000);
-  if (isNaN(k) || k < 0 || k >= DAYS) throw new Error(dateStr + ' は催事の開始日から' + DAYS + '日の範囲外です');
+  if (isNaN(k) || k < 0 || k >= layout.days) {
+    throw new Error(dateStr + ' は催事の期間(' + layout.days + '日)の範囲外です。日数を増やすには催事マスタの「日数」を直して「日数を反映」を押してください');
+  }
   return FIRST_COL + 8 * k;
 }
 
@@ -303,7 +305,7 @@ function writeSales_(sh, layout, r) {
 /** 同じ日・同じ人の行があれば上書き、なければ空き行に書く */
 function writeLabor_(store, r, tz) {
   var sh = store.getSheetByName(STORE.LABOR);
-  var vals = sh.getRange(2, 1, 300, 3).getValues();
+  var vals = sh.getRange(2, 1, 300, 2).getValues();
   var row = 0, empty = 0;
   for (var i = 0; i < vals.length; i++) {
     if (!vals[i][0] && !empty) empty = i + 2;
@@ -311,8 +313,8 @@ function writeLabor_(store, r, tz) {
   }
   row = row || empty;
   if (!row) throw new Error('人件費タブに空き行がありません');
-  sh.getRange(row, 1, 1, 7).setValues([[toDate_(r.date), r.name, r.event, r.event, r.start, r.end, r.rest]]);
-  sh.getRange(row, 9, 1, 3).setValues([[r.wage, r.transReceipt === null ? '' : r.transReceipt, r.transNone === null ? '' : r.transNone]]);
+  sh.getRange(row, 1, 1, 5).setValues([[toDate_(r.date), r.name, r.start, r.end, r.rest]]);
+  sh.getRange(row, 7, 1, 3).setValues([[r.wage, r.transReceipt === null ? '' : r.transReceipt, r.transNone === null ? '' : r.transNone]]);
 }
 
 function firstEmpty_(sh, col, from, count) {
@@ -338,24 +340,62 @@ function openStore_(hq, event) {
   return SpreadsheetApp.openById(String(id));
 }
 
+/** 催事マスタの1行から日数を決める（H列があればそれ、なければ 開始日〜終了日） */
+function eventDays_(row) {
+  var d = Number(row[7]);
+  if (d >= 1) return Math.min(d, DAYS);
+  var s = asDate_(row[2]), e = asDate_(row[3]);
+  if (s && e) return Math.max(1, Math.min(DAYS, Math.round((e - s) / 86400000) + 1));
+  return DAYS;
+}
+
+/** 使う日数ぶんのブロックだけ表示し、残りは非表示にする */
+function applyDays_(store, days) {
+  var sh = store.getSheetByName(STORE.STOCK);
+  sh.getRange('D1').setValue(days);
+  sh.showColumns(FIRST_COL, 8 * DAYS);
+  if (days < DAYS) sh.hideColumns(FIRST_COL + 8 * days, 8 * (DAYS - days));
+}
+
 /** テンプレートをコピーして店舗ファイルを作り、催事マスタにIDを記録する */
 function createStoreFile_(hq, row) {
   var settings = hq.getSheetByName(SHEET.SETTINGS);
   var templateId = settings.getRange('B1').getValue();
   var folderId = settings.getRange('B2').getValue();
   var ev = hq.getSheetByName(SHEET.EVENT);
-  var v = ev.getRange(row, 1, 1, 5).getValues()[0];          // 催事名,場所,開始日,終了日,出店料率
+  var v = ev.getRange(row, 1, 1, 8).getValues()[0];   // 催事名,場所,開始日,終了日,出店料率,(ID),(URL),日数
   var tz = hq.getSpreadsheetTimeZone();
-  var startDate = asDate_(v[2]), endDate = asDate_(v[3]);
+  var startDate = asDate_(v[2]);
   var year = Utilities.formatDate(startDate || new Date(), tz, 'yyyy');
   var copy = DriveApp.getFileById(templateId).makeCopy(v[0] + ' ' + year, DriveApp.getFolderById(folderId));
   var store = SpreadsheetApp.openById(copy.getId());
   var st = store.getSheetByName(STORE.STOCK);
   st.getRange('B1').setValue(v[0]);
   st.getRange('B2').setValue(startDate || v[2]);
-  store.getSheetByName(STORE.EVENT).getRange('A2:E2').setValues([[v[0], v[1], startDate || v[2], endDate || v[3], v[4]]]);
+  st.getRange('D2').setValue(v[4]);                   // 出店料率
+  applyDays_(store, eventDays_(v));
   ev.getRange(row, 6).setValue(copy.getId());
   return copy.getId();
+}
+
+/** メニュー: 催事マスタの「日数」「出店料率」「開始日」を、作成済みの店舗ファイルに反映する */
+function updateDays() {
+  var hq = SpreadsheetApp.getActive();
+  var sh = hq.getSheetByName(SHEET.EVENT);
+  var n = sh.getLastRow() - 1;
+  if (n < 1) return;
+  var done = [];
+  sh.getRange(2, 1, n, 8).getValues().forEach(function (v) {
+    if (!v[0] || !v[5]) return;
+    try {
+      var store = SpreadsheetApp.openById(String(v[5]));
+      var st = store.getSheetByName(STORE.STOCK);
+      st.getRange('D2').setValue(v[4]);
+      applyDays_(store, eventDays_(v));
+      done.push(v[0]);
+    } catch (e) { /* 開けないファイルは飛ばす */ }
+  });
+  SpreadsheetApp.getUi().alert('反映しました: ' + (done.join('、') || 'なし'));
 }
 
 /** メニュー: 店舗ファイルが未作成の催事すべてに作る */
