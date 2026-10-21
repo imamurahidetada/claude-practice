@@ -3,19 +3,22 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>姿勢改善＆腹筋ダイエット 28日プラン</title>
+<title>28日ボディプラン</title>
+<meta name="claude:viewport-fit-sides" content="cover">
 <style>
 :root{
   --bg:#f6f7f9;--card:#fff;--text:#1f2933;--sub:#6b7785;--line:#e3e7ec;
   --accent:#0f9d8a;--accent-soft:#dff5f1;--warn:#c2410c;
-  --posture:#6366f1;--core:#ef4444;--lower:#f59e0b;--upper:#0ea5e9;--cardio:#10b981;--life:#8b5cf6;
+  --on-accent:#fff;--posture:#6366f1;--core:#ef4444;--lower:#f59e0b;--upper:#0ea5e9;--cardio:#10b981;--life:#8b5cf6;
 }
 @media (prefers-color-scheme:dark){
-  :root{--bg:#12161b;--card:#1b2128;--text:#e8ecf0;--sub:#9aa7b4;--line:#2b343e;--accent:#2dd4bf;--accent-soft:#12332f;--warn:#fb923c}
+  :root:not([data-theme="light"]){--bg:#12161b;--card:#1b2128;--text:#e8ecf0;--sub:#9aa7b4;--line:#2b343e;--accent:#2dd4bf;--accent-soft:#12332f;--warn:#fb923c;--on-accent:#04211d;color-scheme:dark}
 }
+:root[data-theme="dark"]{--bg:#12161b;--card:#1b2128;--text:#e8ecf0;--sub:#9aa7b4;--line:#2b343e;--accent:#2dd4bf;--accent-soft:#12332f;--warn:#fb923c;--on-accent:#04211d;color-scheme:dark}
 *{box-sizing:border-box}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);background:var(--bg);z-index:10}
 body{margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Noto Sans JP",sans-serif;line-height:1.6}
-.wrap{max-width:720px;margin:0 auto;padding:16px}
+.wrap{max-width:720px;margin:0 auto;padding-block:16px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 h1{font-size:1.2rem;margin:0 0 4px}
 h2{font-size:1.05rem;margin:0 0 8px}
 .sub{color:var(--sub);font-size:.85rem}
@@ -27,12 +30,12 @@ h2{font-size:1.05rem;margin:0 0 8px}
 .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
 .stat{text-align:center;background:var(--bg);border-radius:10px;padding:8px 4px}
 .stat b{display:block;font-size:1.15rem}
-.tabs{display:flex;gap:4px;margin:12px 0;position:sticky;top:0;background:var(--bg);padding:6px 0;z-index:5}
+.tabs{display:flex;gap:4px;margin:12px 0;position:sticky;top:env(safe-area-inset-top,0px);background:var(--bg);padding:6px 0;z-index:5}
 .tabs button{flex:1;padding:10px 4px;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:10px;font-size:.9rem;cursor:pointer}
-.tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent);font-weight:700}
+.tabs button.on{background:var(--accent);color:var(--on-accent);border-color:var(--accent);font-weight:700}
 button,input,textarea{font:inherit;color:inherit}
 .btn{padding:8px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);cursor:pointer}
-.btn.pri{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn.pri{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
 .btn.danger{color:var(--warn)}
 input[type=date],input[type=number],input[type=text]{padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--card);min-width:0}
 .task{display:flex;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
@@ -52,7 +55,7 @@ input[type=date],input[type=number],input[type=text]{padding:8px;border:1px soli
 .cell{border:1px solid var(--line);border-radius:10px;padding:6px 2px;text-align:center;background:var(--card);cursor:pointer;font-size:.8rem}
 .cell small{display:block;color:var(--sub);font-size:.65rem}
 .cell.today{outline:2px solid var(--accent)}
-.cell.full{background:var(--accent);color:#fff}.cell.full small{color:#fff}
+.cell.full{background:var(--accent);color:var(--on-accent)}.cell.full small{color:var(--on-accent)}
 .cell.part{background:var(--accent-soft)}
 .guide h3{font-size:.95rem;margin:12px 0 4px}
 .guide ul{margin:4px 0 8px;padding-left:20px;font-size:.88rem}
@@ -133,9 +136,12 @@ svg{width:100%;height:auto}
     <div class="card">
       <h2>データ管理</h2>
       <div class="row">
-        <button class="btn" id="exportBtn">バックアップを書き出す</button>
+        <button class="btn" id="exportBtn">バックアップをコピー</button>
         <button class="btn danger" id="resetBtn">すべてリセット</button>
+        <span id="resetAsk" class="hidden"><span class="sub">本当に削除しますか？</span> <button class="btn danger" id="resetYes">削除する</button> <button class="btn" id="resetNo">やめる</button></span>
       </div>
+      <textarea id="exportBox" class="hidden" readonly rows="4" style="width:100%;margin-top:8px"></textarea>
+      <div class="sub" id="msg" style="margin-top:6px"></div>
       <div class="sub" style="margin-top:6px">データはこの端末のブラウザ内にのみ保存されます。</div>
     </div>
   </section>
@@ -363,12 +369,16 @@ $('logList').addEventListener('click',function(e){
   S.logs=S.logs.filter(function(l){return l.date!==b.dataset.ldel;});save();renderLog();
 });
 $('exportBtn').onclick=function(){
-  var blob=new Blob([JSON.stringify(S,null,2)],{type:'application/json'}),a=document.createElement('a');
-  a.href=URL.createObjectURL(blob);a.download='body-plan-backup.json';a.click();URL.revokeObjectURL(a.href);
+  var txt=JSON.stringify(S),box=$('exportBox');
+  box.value=txt;box.classList.remove('hidden');box.select();
+  var ok=function(){$('msg').textContent='コピーしました。メモアプリなどに貼り付けて保管してください。';};
+  var ng=function(){$('msg').textContent='枠内の文字を長押ししてコピーしてください。';};
+  try{navigator.clipboard.writeText(txt).then(ok,ng);}catch(e){ng();}
 };
-$('resetBtn').onclick=function(){
-  if(!confirm('チェック状態・追加タスク・記録をすべて削除します。よろしいですか？'))return;
-  S={};try{localStorage.removeItem(KEY);}catch(e){}load();$('start').value=S.start;cur=todayIdx();renderAll();
+$('resetBtn').onclick=function(){$('resetBtn').classList.add('hidden');$('resetAsk').classList.remove('hidden');};
+$('resetNo').onclick=function(){$('resetAsk').classList.add('hidden');$('resetBtn').classList.remove('hidden');};
+$('resetYes').onclick=function(){
+  S={};try{localStorage.removeItem(KEY);}catch(e){}load();$('start').value=S.start;cur=todayIdx();renderAll();$('resetNo').onclick();
 };
 
 renderGuide();renderAll();
