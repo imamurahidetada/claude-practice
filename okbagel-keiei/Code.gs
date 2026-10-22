@@ -600,17 +600,42 @@ function applyDays_(store, days) {
   if (days < DAYS) sh.hideColumns(FIRST_COL + 8 * days, 8 * (DAYS - days));
 }
 
+/** 「{開始日}_経営管理_{催事名}」のような名前の型に、日付や催事名を当てはめる */
+function fillPattern_(pattern, name, start, tz) {
+  var d = start || new Date();
+  return String(pattern)
+    .replace(/\{開始日\}/g, Utilities.formatDate(d, tz, 'yyyy-MM-dd'))
+    .replace(/\{年月\}/g, Utilities.formatDate(d, tz, 'yyyy-MM'))
+    .replace(/\{年\}/g, Utilities.formatDate(d, tz, 'yyyy'))
+    .replace(/\{催事名\}/g, name);
+}
+
+/**
+ * 親フォルダの中から催事のフォルダを探し、なければ作る。
+ * 「2026-01_西宮阪急_九州うまかもん」のように後ろに名前が続くフォルダも、先頭が一致すれば同じものとして使う。
+ */
+function findOrCreateFolder_(parent, folderName) {
+  var it = parent.getFolders();
+  while (it.hasNext()) {
+    var f = it.next(), n = f.getName();
+    if (n === folderName || n.indexOf(folderName + '_') === 0) return f;
+  }
+  return parent.createFolder(folderName);
+}
+
 /** テンプレートをコピーして店舗ファイルを作り、催事マスタにIDを記録する */
 function createStoreFile_(hq, row) {
   var settings = hq.getSheetByName(SHEET.SETTINGS);
   var templateId = settings.getRange('B1').getValue();
-  var folderId = settings.getRange('B2').getValue();
+  var rootId = settings.getRange('B2').getValue();            // 催事フォルダを作る親（例: 03_催事出店）
+  var filePattern = settings.getRange('B3').getValue() || '{開始日}_経営管理_{催事名}';
+  var folderPattern = settings.getRange('B4').getValue() || '{年月}_{催事名}';
   var ev = hq.getSheetByName(SHEET.EVENT);
   var v = ev.getRange(row, 1, 1, 8).getValues()[0];   // 催事名,場所,開始日,終了日,出店料率,(ID),(URL),日数
   var tz = hq.getSpreadsheetTimeZone();
   var startDate = asDate_(v[2]);
-  var year = Utilities.formatDate(startDate || new Date(), tz, 'yyyy');
-  var copy = DriveApp.getFileById(templateId).makeCopy(v[0] + ' ' + year, DriveApp.getFolderById(folderId));
+  var folder = findOrCreateFolder_(DriveApp.getFolderById(rootId), fillPattern_(folderPattern, v[0], startDate, tz));
+  var copy = DriveApp.getFileById(templateId).makeCopy(fillPattern_(filePattern, v[0], startDate, tz), folder);
   var store = SpreadsheetApp.openById(copy.getId());
   var st = store.getSheetByName(STORE.STOCK);
   st.getRange('B1').setValue(v[0]);
