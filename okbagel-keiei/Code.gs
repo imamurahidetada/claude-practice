@@ -189,11 +189,18 @@ function expandBlocks_(text, ctx) {
     if (!line) return;
 
     // 見出し行
-    var h = line.match(/^(催事作成|日次報告|経費報告|持込備品|持ち込み備品|期首在庫)(?:\s+(\S+))?$/);
+    var h = line.match(/^(催事作成|日次報告|経費報告|持込備品|持ち込み備品|期首在庫)(?:\s*(.+))?$/);
     if (h && (h[1] !== '催事作成' || !h[2])) {
       flush();
+      // 見出しの後ろは「店名」「店名 日付」「店名日付」（スペースなしでもよい）のどれでも読む
+      var headRef = h[2] ? h[2].trim() : '', headDate = null;
+      var hdm = headRef.match(/^(.*?)\s*((?:\d{4}[\/-])?\d{1,2}[\/月]\d{1,2}日?)$/);
+      if (hdm) {
+        headDate = parseDate_(hdm[2], ctx.year);
+        if (headDate) headRef = hdm[1].trim();
+      }
       var kind = h[1] === '持ち込み備品' ? '持込備品' : (h[1] === '経費報告' ? '日次報告' : h[1]);   // 経費報告は日次報告の経費だけ版（日付を省くと今日）
-      cur = { kind: kind, expenseOnly: h[1] === '経費報告', event: h[2] || null, date: null, user: null, src: src,
+      cur = { kind: kind, expenseOnly: h[1] === '経費報告', event: headRef || null, date: headDate, user: null, src: src,
         place: '', shop: '', period: '', rate: '', exps: [], salesEx: null, salesInc: null, salesSrc: src, stockHeader: false };
       return;
     }
