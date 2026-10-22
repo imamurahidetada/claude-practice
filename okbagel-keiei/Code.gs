@@ -55,9 +55,20 @@ function findEvent_(events, ref, dateStr, today) {
   if (!ref) return null;
   for (var i = 0; i < events.length; i++) if (events[i].key === ref) return ref;
   var cands = events.filter(function (e) { return e.shop === ref || (e.event && e.event === ref); });
+  var t = (dateStr ? toDate_(dateStr) : today).getTime();
+  var inPeriod = function (e) {
+    var st = e.start ? e.start.getTime() : 0, en = e.end ? e.end.getTime() : st;
+    return t >= st && t <= en;
+  };
+  // 店名の一部だけ書かれた場合（「木の葉モール」→「木の葉モール橋本」）は、その日が期間内の催事に限って候補に加える
+  if (!cands.some(inPeriod)) {
+    var near = events.filter(function (e) {
+      return inPeriod(e) && (e.shop.indexOf(ref) === 0 || ref.indexOf(e.shop) === 0 || (e.event && e.event.indexOf(ref) === 0));
+    });
+    if (near.length) cands = near;
+  }
   if (!cands.length) return null;
   if (cands.length === 1) return cands[0].key;
-  var t = (dateStr ? toDate_(dateStr) : today).getTime();
   var score = function (e) {
     var s = e.start ? e.start.getTime() : 0, en = e.end ? e.end.getTime() : s;
     var dist = t < s ? s - t : (t > en ? t - en : 0);
