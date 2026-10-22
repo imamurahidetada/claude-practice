@@ -463,7 +463,7 @@ function onOpen() {
     .addItem('日数・出店料率を店舗ファイルに反映', 'updateDays')
     .addItem('店舗データを吸い上げ（全催事）', 'pullAll')
     .addSeparator()
-    .addItem('過去の催事データを移行（元の経営管理から）', 'migratePast')
+    .addItem('過去データを移行（催事マスタで○を付けた催事）', 'migratePast')
     .addItem('フォーム自動取込セットアップ（初回のみ）', 'setupForm')
     .addItem('毎日自動吸い上げを設定（初回のみ）', 'setupDailyPull')
     .addToUi();
@@ -822,9 +822,10 @@ function createStoreFiles() {
 // ---------------------------------------------------------------- 過去の催事データの移行（元の経営管理ファイルから）
 
 /**
- * 終わった催事ごとに、元の経営管理ファイルの同名タブ（在庫）と、使用経費・人件費・備品原価・領収書の該当行を、
- * 店舗ファイルへ写す。店舗ファイルが無ければ作る。移行済みの催事は飛ばす（何度押してもよい）。
- * 元ファイルのIDは「設定」タブの B5。
+ * 催事マスタのJ列「過去データ移行」に「○」を付けた催事だけ、元の経営管理ファイルから店舗ファイルへ写す。
+ * 写し終わると J列が「済」になる。店舗ファイルが無ければ作る。少しずつ進めたいときは、○を付けた分だけが対象。
+ *   元の同名タブ（在庫）と、使用経費・人件費・備品原価・領収書の該当行を写す。元ファイルのIDは「設定」タブの B5。
+ * 「済」の催事にもう一度「○」を付けると、やり直せる（使用経費などの入力欄は、いったん消してから写し直す）。
  */
 function migratePast() {
   var hq = SpreadsheetApp.getActive();
@@ -832,29 +833,33 @@ function migratePast() {
   var ui = SpreadsheetApp.getUi();
   if (!oldId) { ui.alert('「設定」タブのB5に、元の経営管理ファイル（Googleスプレッドシート版）のIDを入れてください'); return; }
   var old = SpreadsheetApp.openById(String(oldId));
-  var tz = hq.getSpreadsheetTimeZone();
-  var now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  var props = PropertiesService.getDocumentProperties();
-  var t0 = Date.now(), done = [], skipped = [], stopped = false;
+  var sh = hq.getSheetByName(SHEET.EVENT);
+  var n = sh.getLastRow() - 1;
+  if (n < 1) return;
+  var rows = sh.getRange(2, 1, n, 10).getValues();
+  var t0 = Date.now(), done = [], skipped = [], stopped = false, any = false;
 
-  readMaster_(hq).forEach(function (e) {
+  rows.forEach(function (v, i) {
+    var mark = String(v[9]).trim();
+    if (!v[EV.KEY] || (mark !== '○' && mark !== '〇')) return;
+    any = true;
     if (stopped) return;
-    if (!e.end || e.end >= today) return;                                // 終わった催事だけ
-    if (props.getProperty('migrated:' + e.key)) return;
-    var tab = old.getSheetByName(e.shop);
-    if (!tab) { skipped.push(e.key + '（元のファイルに「' + e.shop + '」タブなし）'); return; }
+    var key = String(v[EV.KEY]).trim(), shop = shopOfKey_(key);
+    var tab = old.getSheetByName(shop);
+    if (!tab) { skipped.push(key + '（元のファイルに「' + shop + '」タブなし）'); return; }
     if (Date.now() - t0 > 4.2 * 60 * 1000) { stopped = true; return; }   // 実行時間の上限対策（もう一度押せば続きから）
     try {
-      migrateOne_(old, tab, openStore_(hq, e.key), e.shop);
-      props.setProperty('migrated:' + e.key, '1');
-      done.push(e.key);
-    } catch (err) { skipped.push(e.key + '（' + err.message + '）'); }
+      migrateOne_(old, tab, openStore_(hq, key), shop);
+      sh.getRange(i + 2, 10).setValue('済');
+      done.push(key);
+    } catch (err) { skipped.push(key + '（' + err.message + '）'); }
   });
 
+  if (!any) { ui.alert('催事マスタのJ列「過去データ移行」に、移行したい催事の行へ「○」を付けてから押してください'); return; }
   if (done.length) pullStoreData_(hq, done);
   ui.alert('過去データの移行\n移行: ' + (done.join('、') || 'なし') +
     (skipped.length ? '\n飛ばした: ' + skipped.join('、') : '') +
-    (stopped ? '\n\n時間切れのため途中までです。もう一度「過去の催事データを移行」を押してください。' : ''));
+    (stopped ? '\n\n時間切れのため途中までです。もう一度押すと、○のまま残った分が続きから進みます。' : ''));
 }
 
 function migrateOne_(old, tab, store, shop) {
@@ -900,6 +905,10 @@ function migrateOne_(old, tab, store, shop) {
       }));
     });
   };
+  // やり直しで二重にならないよう、入力欄をいったん空にしてから写す
+  [[STORE.EXPENSE, 'A2:D300'], [STORE.LABOR, 'A2:E300'], [STORE.LABOR, 'G2:I300'], [STORE.EQUIP, 'A2:E150'], [STORE.RECEIPT, 'A2:F300']].forEach(function (x) {
+    store.getSheetByName(x[0]).getRange(x[1]).clearContent();
+  });
   put(STORE.EXPENSE, take('使用経費（本部専用）', 5, 1), [{ from: [0, 2, 3, 4], to: 1 }]);                       // 日付,項目,内容,金額
   put(STORE.LABOR, take('人件費（本部専用）', 11, 2), [{ from: [0, 1, 4, 5, 6], to: 1 }, { from: [8, 9, 10], to: 7 }]);
   put(STORE.EQUIP, take('備品原価（本部専用）', 6, 0), [{ from: [1, 2, 3, 4, 5], to: 1 }]);
