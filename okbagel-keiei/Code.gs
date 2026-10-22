@@ -77,7 +77,7 @@ function parseReport(text, ctx) {
     if (!line) return;
     var err = function (msg) { errors.push({ line: orig, msg: msg }); };
 
-    var kw = line.match(/^(売上|在庫|人件費|経費|領収書)\s*(.*)$/);
+    var kw = line.match(/^(催事作成|売上|在庫|人件費|経費|領収書)\s*(.*)$/);
 
     // 在庫ブロックの商品行
     if (!kw) {
@@ -114,6 +114,21 @@ function parseReport(text, ctx) {
       if (ctx.events.indexOf(ev) < 0) return err('催事名「' + ev + '」が催事マスタにありません');
       records.push({ type: 'receipt', date: dateStr, user: tokens[0], event: ev, item: tokens[2],
         place: tokens.slice(3).join(' '), amount: amt, rate: rate, src: orig });
+      return;
+    }
+
+    if (type === '催事作成') {
+      // 催事作成 催事名 開始日 [7日] [出店料率20%] [場所 xxx]
+      var cname = tokens.shift();
+      if (!cname) return err('催事作成: 催事名がありません');
+      if (ctx.events.indexOf(cname) >= 0) return err('催事「' + cname + '」はすでに催事マスタにあります（店舗ファイルが未作成なら、メニュー「店舗ファイルを作成」で作れます）');
+      var rest2 = tokens.join(' ');
+      var dm = rest2.match(/(\d+)\s*日/);
+      var rm = rest2.match(/出店料率\s*(\d+(?:\.\d+)?)\s*%?/);
+      var pm = rest2.match(/場所\s*(\S+)/);
+      ctx.events.push(cname);   // 同じ文の後続行（売上など）が通るように
+      records.push({ type: 'create', event: cname, date: dateStr, days: dm ? Number(dm[1]) : null,
+        rate: rm ? Number(rm[1]) / 100 : '', place: pm ? pm[1] : '', src: orig });
       return;
     }
 
@@ -206,11 +221,29 @@ function importText(text) {
   var parseErrors = res.errors.slice();
   props.setProperty('lastWage', JSON.stringify(ctx.lastWage));
 
+  var log = [], now = new Date(), touched = [], ok = 0, ng = res.errors.length;
+  var notes = [];
+
+  // 「催事作成」を先に処理（催事マスタに行を足し、店舗ファイルを作る）
+  res.records.filter(function (r) { return r.type === 'create'; }).forEach(function (r) {
+    try {
+      var days = createEvent_(hq, r);
+      ok++;
+      notes.push('催事「' + r.event + '」を登録し、店舗ファイルを作成しました（' + days + '日）');
+      log.push([now, 'create', r.src, 'OK', r.event]);
+    } catch (e) {
+      ng++;
+      res.errors.push({ line: r.src, msg: e.message });
+      log.push([now, 'create', r.src, 'エラー', e.message]);
+    }
+  });
+
   // 催事ごとにまとめて、その店舗ファイルへ書き込む
   var byEvent = {};
-  res.records.forEach(function (r) { (byEvent[r.event] = byEvent[r.event] || []).push(r); });
+  res.records.forEach(function (r) {
+    if (r.type !== 'create') (byEvent[r.event] = byEvent[r.event] || []).push(r);
+  });
 
-  var log = [], now = new Date(), touched = [], ok = 0, ng = res.errors.length;
   Object.keys(byEvent).forEach(function (event) {
     var recs = byEvent[event];
     try {
@@ -239,6 +272,7 @@ function importText(text) {
   if (touched.length) pullStoreData_(hq, touched);
 
   var msg = '取り込み完了: 成功 ' + ok + ' 行 / エラー ' + ng + ' 行';
+  if (notes.length) msg += '\n' + notes.join('\n');
   if (res.errors.length) msg += '\n' + res.errors.map(function (x) { return '・' + x.line + ' → ' + x.msg; }).join('\n');
   return msg;
 }
@@ -338,6 +372,27 @@ function openStore_(hq, event) {
   var id = hq.getSheetByName(SHEET.EVENT).getRange(row, 6).getValue();
   if (!id) id = createStoreFile_(hq, row);
   return SpreadsheetApp.openById(String(id));
+}
+
+/** 催事マスタの空き行を返す（足りなければ行を増やす） */
+function nextEventRow_(sh) {
+  var v = sh.getRange(2, 1, Math.max(sh.getMaxRows() - 1, 1), 1).getValues();
+  for (var i = 0; i < v.length; i++) if (!v[i][0]) return i + 2;
+  sh.insertRowsAfter(sh.getMaxRows(), 20);
+  return v.length + 2;
+}
+
+/** 「催事作成」: 催事マスタに1行足して、店舗ファイルまで作る。使う日数を返す */
+function createEvent_(hq, r) {
+  var sh = hq.getSheetByName(SHEET.EVENT);
+  var start = toDate_(r.date);
+  var days = r.days && r.days >= 1 ? Math.min(r.days, DAYS) : null;
+  var end = days ? new Date(start.getFullYear(), start.getMonth(), start.getDate() + days - 1) : '';
+  var row = nextEventRow_(sh);
+  sh.getRange(row, 1, 1, 5).setValues([[r.event, r.place, start, end, r.rate]]);
+  if (days) sh.getRange(row, 8).setValue(days);
+  createStoreFile_(hq, row);
+  return days || eventDays_(sh.getRange(row, 1, 1, 8).getValues()[0]);
 }
 
 /** 催事マスタの1行から日数を決める（H列があればそれ、なければ 開始日〜終了日） */
