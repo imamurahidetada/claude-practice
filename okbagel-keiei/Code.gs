@@ -93,6 +93,7 @@ function normalize_(s) {
     .replace(/[：]/g, ':')
     .replace(/[，、]/g, ',')
     .replace(/[％]/g, '%')
+    .replace(/[＋]/g, '+')
     .replace(/[　\t]/g, ' ')
     .replace(/(\d)\s*[〜～−–ー]\s*(\d)/g, '$1-$2')
     .replace(/[【】\[\]]/g, ' ')
@@ -366,8 +367,15 @@ function parseReport(text, ctx) {
       var ekey = findEvent_(ctx.events, eev, hintDate, ctx.today);
       if (!ekey) return err('店名「' + eev + '」が催事マスタにありません');
       var eafter = et.join(' ');
-      records.push({ type: 'equip', event: ekey, name: ename, cost: pick_(eafter, '単価'), bring: pick_(eafter, '持込'),
-        buy: pick_(eafter, '購入'), back: pick_(eafter, '持帰'), src: orig });
+      // 「購入+3」のように+を付けると、今ある数に足す（買い足しが何回あっても累計になる）。+なしは、その数に置き換える
+      var qty = function (label) {
+        var qm = eafter.match(new RegExp(label + '\\s*(\\+)?\\s*(-?[\\d,]+(?:\\.\\d+)?)'));
+        return qm ? { v: num_(qm[2]), add: !!qm[1] } : null;
+      };
+      var qb = qty('持込'), qp = qty('購入'), qk = qty('持帰');
+      records.push({ type: 'equip', event: ekey, name: ename, cost: pick_(eafter, '単価'),
+        bring: qb ? qb.v : null, buy: qp ? qp.v : null, back: qk ? qk.v : null,
+        addBring: !!(qb && qb.add), addBuy: !!(qp && qp.add), addBack: !!(qk && qk.add), src: orig });
       return;
     }
 
@@ -605,8 +613,12 @@ function writeEquip_(store, r) {
   var old = row ? vals[row - 2] : ['', '', '', '', ''];
   row = row || empty;
   if (!row) throw new Error('備品原価タブに空き行がありません');
-  var pick = function (v, o) { return v !== null ? v : o; };
-  sh.getRange(row, 1, 1, 5).setValues([[r.name, pick(r.cost, old[1]), pick(r.bring, old[2]), pick(r.buy, old[3]), pick(r.back, old[4])]]);
+  var pick = function (v, o, add) {
+    if (v === null) return o;
+    return add ? (Number(o) || 0) + v : v;            // +付きなら今の数に足す
+  };
+  sh.getRange(row, 1, 1, 5).setValues([[r.name, pick(r.cost, old[1], false),
+    pick(r.bring, old[2], r.addBring), pick(r.buy, old[3], r.addBuy), pick(r.back, old[4], r.addBack)]]);
 }
 
 /** 在庫管理表の行・日付の位置を調べる（商品行を増減しても追従） */
