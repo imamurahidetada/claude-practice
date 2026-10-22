@@ -123,7 +123,8 @@ function expandBlocks_(text, ctx) {
       }
       var rate = c.rate ? c.rate.replace(/[^\d.]/g, '') : '';
       emit('催事作成 ' + c.event + ' ' + ymd_(pd) + (days ? ' ' + days + '日' : '') +
-        (rate ? ' 出店料率' + rate + '%' : '') + (c.place ? ' 場所 ' + c.place : ''), c.src);
+        (rate ? ' 出店料率' + rate + '%' : '') + (c.shop ? ' 店名 ' + c.shop.replace(/\s+/g, '') : '') +
+        (c.place ? ' 場所 ' + c.place : ''), c.src);
       c.exps.forEach(function (x) { expandExpense_(x.label, x.value, c.event, pd, '', x.src, emit, fail); });
     }
   }
@@ -138,7 +139,7 @@ function expandBlocks_(text, ctx) {
       flush();
       var kind = h[1] === '持ち込み備品' ? '持込備品' : h[1];
       cur = { kind: kind, event: h[2] || null, date: null, user: null, src: src,
-        place: '', period: '', rate: '', exps: [], salesEx: null, salesInc: null, salesSrc: src, stockHeader: false };
+        place: '', shop: '', period: '', rate: '', exps: [], salesEx: null, salesInc: null, salesSrc: src, stockHeader: false };
       return;
     }
     if (!cur) { emit(line, src); return; }
@@ -157,6 +158,7 @@ function expandBlocks_(text, ctx) {
       if (label === '報告者') { cur.user = val; return; }
       if (cur.kind === '催事作成') {
         if (label === '場所') { cur.place = val; return; }
+        if (label === '店名') { cur.shop = val; return; }
         if (label === '期間') { cur.period = val; return; }
         if (label === '出店料' || label === '出店料率') { cur.rate = val; return; }
         if (EXPENSE_LABELS.indexOf(label) >= 0) { cur.exps.push({ label: label, value: val, src: src }); return; }
@@ -295,11 +297,12 @@ function parseReport(text, ctx) {
       var rest2 = tokens.join(' ');
       var pm = rest2.match(/場所\s*(.+)$/);        // 場所は行末まで（スペースを含んでよい）
       if (pm) rest2 = rest2.slice(0, pm.index);
-      var dm = rest2.match(/(\d+)\s*日/);
+      var sm = rest2.match(/店名\s*(\S+)/);
+      var dm = rest2.replace(/店名\s*\S+/, ' ').match(/(\d+)\s*日/);
       var rm = rest2.match(/出店料率\s*(\d+(?:\.\d+)?)\s*%?/);
       ctx.events.push(cname);   // 同じ文の後続行（売上など）が通るように
       records.push({ type: 'create', event: cname, date: dateStr, days: dm ? Number(dm[1]) : null,
-        rate: rm ? Number(rm[1]) / 100 : '', place: pm ? pm[1].trim() : '', src: orig });
+        rate: rm ? Number(rm[1]) / 100 : '', place: pm ? pm[1].trim() : '', shop: sm ? sm[1] : '', src: orig });
       return;
     }
 
@@ -579,6 +582,7 @@ function createEvent_(hq, r) {
   var row = nextEventRow_(sh);
   sh.getRange(row, 1, 1, 5).setValues([[r.event, r.place, start, end, r.rate]]);
   if (days) sh.getRange(row, 8).setValue(days);
+  if (r.shop) sh.getRange(row, 9).setValue(r.shop);
   createStoreFile_(hq, row);
   return days || eventDays_(sh.getRange(row, 1, 1, 8).getValues()[0]);
 }
@@ -601,12 +605,13 @@ function applyDays_(store, days) {
 }
 
 /** 「{開始日}_経営管理_{催事名}」のような名前の型に、日付や催事名を当てはめる */
-function fillPattern_(pattern, name, start, tz) {
+function fillPattern_(pattern, name, shop, start, tz) {
   var d = start || new Date();
   return String(pattern)
     .replace(/\{開始日\}/g, Utilities.formatDate(d, tz, 'yyyy-MM-dd'))
     .replace(/\{年月\}/g, Utilities.formatDate(d, tz, 'yyyy-MM'))
     .replace(/\{年\}/g, Utilities.formatDate(d, tz, 'yyyy'))
+    .replace(/\{店名\}/g, shop || name)
     .replace(/\{催事名\}/g, name);
 }
 
@@ -628,17 +633,19 @@ function createStoreFile_(hq, row) {
   var settings = hq.getSheetByName(SHEET.SETTINGS);
   var templateId = settings.getRange('B1').getValue();
   var rootId = settings.getRange('B2').getValue();            // 催事フォルダを作る親（例: 03_催事出店）
-  var filePattern = settings.getRange('B3').getValue() || '{開始日}_経営管理_{催事名}';
-  var folderPattern = settings.getRange('B4').getValue() || '{年月}_{催事名}';
+  var filePattern = settings.getRange('B3').getValue() || '{開始日}_損益管理_{店名}';
+  var folderPattern = settings.getRange('B4').getValue() || '{年月}_{店名}';
   var ev = hq.getSheetByName(SHEET.EVENT);
-  var v = ev.getRange(row, 1, 1, 8).getValues()[0];   // 催事名,場所,開始日,終了日,出店料率,(ID),(URL),日数
+  var v = ev.getRange(row, 1, 1, 9).getValues()[0];   // 催事名,場所,開始日,終了日,出店料率,(ID),(URL),日数,店名
   var tz = hq.getSpreadsheetTimeZone();
   var startDate = asDate_(v[2]);
-  var folder = findOrCreateFolder_(DriveApp.getFolderById(rootId), fillPattern_(folderPattern, v[0], startDate, tz));
-  var copy = DriveApp.getFileById(templateId).makeCopy(fillPattern_(filePattern, v[0], startDate, tz), folder);
+  var shop = String(v[8] || '').trim();                 // 店名（空欄なら催事名）
+  var folder = findOrCreateFolder_(DriveApp.getFolderById(rootId), fillPattern_(folderPattern, v[0], shop, startDate, tz));
+  var fileName = fillPattern_(filePattern, v[0], shop, startDate, tz);
+  var copy = DriveApp.getFileById(templateId).makeCopy(fileName, folder);
   var store = SpreadsheetApp.openById(copy.getId());
   var st = store.getSheetByName(STORE.STOCK);
-  st.getRange('B1').setValue(v[0]);
+  st.getRange('B1').setValue(fileName);                 // 在庫管理表の催事名はファイル名と同じにする
   st.getRange('B2').setValue(startDate || v[2]);
   st.getRange('D2').setValue(v[4]);                   // 出店料率
   applyDays_(store, eventDays_(v));
