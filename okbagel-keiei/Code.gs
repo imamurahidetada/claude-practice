@@ -145,6 +145,7 @@ function expandBlocks_(text, ctx) {
     var lm = line.match(/^([^:\s]+)\s*:\s*(.*)$/);
     if (lm) {
       var label = lm[1].replace(/[()（）]/g, ''), val = lm[2].trim();
+      if (!val) return;   // 未記入のラベル行（テンプレートのまま）は読み飛ばす
       if (label === '催事名') { cur.event = val; return; }
       if (label === '日付') {
         var d = parseDate_(val, ctx.year);
