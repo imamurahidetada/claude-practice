@@ -47,6 +47,8 @@ function normalize_(s) {
     .replace(/[　\t]/g, ' ')
     .replace(/(\d)\s*[〜～−–ー]\s*(\d)/g, '$1-$2')
     .replace(/[【】\[\]]/g, ' ')
+    .trim()
+    .replace(/^["“”]+|["“”]+$/g, '')     // スプレッドシートのセルをコピーすると文の前後に付く引用符
     .trim();
 }
 
