@@ -29,6 +29,7 @@ var STORE = {
   LABOR: '人件費',              // A日付 B氏名 C出勤 D退勤 E休憩 F労働時間(式) G時給 H交通費(証あり) I交通費(証なし) J総支給(式)
   EXPENSE: '使用経費',          // A日付 B経費項目 C内容 D入力金額 E税抜金額(式)
   RECEIPT: '領収書',            // A使用日 B使用者 C項目 D購入場所 E税抜 F税率 G消費税(式) H税込(式) I月(式)
+  EQUIP: '備品原価',            // A品名 B原価単価 C事前持込み数 D途中購入 E持ち帰り数 F使用数(式) G金額(式)
   SUMMARY: '集計用'
 };
 var DAYS = 31;          // 在庫管理表にある日数ブロックの最大数（使う日数は D1 に入り、残りは非表示）
@@ -62,6 +63,158 @@ function pick_(line, label) {
   return m ? num_(m[1]) : null;
 }
 
+// ---------------------------------------------------------------- 報告テンプレ（ラベル形式）を1行形式に展開する
+
+var EXPENSE_LABELS = ['什器代', '宿泊費', '交通費', '配送料', '協賛費', '返送費', '支払手数料'];
+var TAX_IN_ITEMS = ['宿泊費', '交通費'];   // 使用経費タブは、この2項目だけ入力額を税込とみなして税抜に直す
+
+function ymd_(d) { return d.y + '/' + d.m + '/' + d.d; }
+
+/** 「税抜20,000円」「税込 8570」「1000円」から金額と税区分を取り出す */
+function parseMoney_(s) {
+  var m = s.match(/(税抜|税込)\s*([\d,]+)/);
+  if (m) {
+    return { amt: num_(m[2]), tax: m[1] === '税抜' ? 'ex' : 'in',
+      rest: s.replace(m[0], ' ').replace(/円/g, ' ').replace(/\s+/g, ' ').replace(/[,\s]+$/, '').trim() };
+  }
+  m = s.match(/([\d,]+)\s*円?\s*$/);
+  if (m) return { amt: num_(m[1]), tax: null, rest: s.slice(0, m.index).replace(/\s+/g, ' ').replace(/[,\s]+$/, '').trim() };
+  return null;
+}
+
+/**
+ * 「催事作成」「日次報告」「持込備品」の見出し行から始まるラベル形式の文を、
+ * 従来の1行形式（売上 浜屋 10/21 税抜 … など）に展開する。
+ * 戻り値: [{ t: 展開後の1行, src: 元の行 } または { err, src }]
+ */
+function expandBlocks_(text, ctx) {
+  var out = [], cur = null;
+  var emit = function (t, src) { out.push({ t: t, src: src }); };
+  var fail = function (src, msg) { out.push({ err: msg, src: src }); };
+
+  function needCtx(src) {
+    if (!cur.event) { fail(src, '先に「催事名：浜屋」の行が必要です'); return false; }
+    if (!cur.date) { fail(src, '先に「日付：10/21」の行が必要です'); return false; }
+    return true;
+  }
+
+  function flush() {
+    if (!cur) return;
+    var c = cur; cur = null;
+    if (c.kind === '日次報告') {
+      if (c.salesEx !== null || c.salesInc !== null) {
+        if (c.salesEx === null) { fail(c.salesSrc, '売上(税抜)が必要です（レシートの税抜小計を書いてください）'); return; }
+        if (!c.event || !c.date) { fail(c.salesSrc, '売上: 催事名・日付の行が必要です'); return; }
+        emit('売上 ' + c.event + ' ' + ymd_(c.date) + ' 税抜 ' + c.salesEx + (c.salesInc !== null ? ' 税込 ' + c.salesInc : ''), c.salesSrc);
+      }
+    } else if (c.kind === '催事作成') {
+      if (!c.event) { fail(c.src, '催事名：浜屋 のように、店舗ファイルや集計で使う短い名前の行が必要です'); return; }
+      if (!c.period) { fail(c.src, '期間：10/21〜7日間 の行が必要です'); return; }
+      var pd = parseDate_(c.period, ctx.year);
+      if (!pd) { fail(c.src, '期間の開始日が読み取れません'); return; }
+      var restP = c.period.replace(pd.text, ' ');
+      var days = null, dm = restP.match(/^\s*-\s*(\d+)\s*日/);
+      if (dm) days = Number(dm[1]);
+      else {
+        var pd2 = parseDate_(restP, pd.y);
+        if (pd2) days = Math.round((new Date(pd2.y, pd2.m - 1, pd2.d) - new Date(pd.y, pd.m - 1, pd.d)) / 86400000) + 1;
+      }
+      var rate = c.rate ? c.rate.replace(/[^\d.]/g, '') : '';
+      emit('催事作成 ' + c.event + ' ' + ymd_(pd) + (days ? ' ' + days + '日' : '') +
+        (rate ? ' 出店料率' + rate + '%' : '') + (c.place ? ' 場所 ' + c.place : ''), c.src);
+      c.exps.forEach(function (x) { expandExpense_(x.label, x.value, c.event, pd, '', x.src, emit, fail); });
+    }
+  }
+
+  String(text).split(/\r?\n/).forEach(function (raw) {
+    var src = raw.trim(), line = normalize_(raw);
+    if (!line) return;
+
+    // 見出し行
+    var h = line.match(/^(催事作成|日次報告|持込備品|持ち込み備品)(?:\s+(\S+))?$/);
+    if (h && (h[1] !== '催事作成' || !h[2])) {
+      flush();
+      var kind = h[1] === '持ち込み備品' ? '持込備品' : h[1];
+      cur = { kind: kind, event: h[2] || null, date: null, user: null, src: src,
+        place: '', period: '', rate: '', exps: [], salesEx: null, salesInc: null, salesSrc: src, stockHeader: false };
+      return;
+    }
+    if (!cur) { emit(line, src); return; }
+
+    // ラベル行
+    var lm = line.match(/^([^:\s]+)\s*:\s*(.*)$/);
+    if (lm) {
+      var label = lm[1].replace(/[()（）]/g, ''), val = lm[2].trim();
+      if (label === '催事名') { cur.event = val; return; }
+      if (label === '日付') {
+        var d = parseDate_(val, ctx.year);
+        if (!d) return fail(src, '日付が読み取れません（10/21 の形で）');
+        cur.date = d; return;
+      }
+      if (label === '報告者') { cur.user = val; return; }
+      if (cur.kind === '催事作成') {
+        if (label === '場所') { cur.place = val; return; }
+        if (label === '期間') { cur.period = val; return; }
+        if (label === '出店料' || label === '出店料率') { cur.rate = val; return; }
+        if (EXPENSE_LABELS.indexOf(label) >= 0) { cur.exps.push({ label: label, value: val, src: src }); return; }
+        return fail(src, '催事作成の中では「' + lm[1] + '」は使えません');
+      }
+      if (cur.kind === '日次報告') {
+        if (label === '売上税抜' || label === '売上') { cur.salesEx = num_(val.replace(/[^\d,.-]/g, '')); cur.salesSrc = src; return; }
+        if (label === '売上税込') { cur.salesInc = num_(val.replace(/[^\d,.-]/g, '')); cur.salesSrc = src; return; }
+        if (!needCtx(src)) return;
+        if (label === '人件費') { emit('人件費 ' + cur.event + ' ' + ymd_(cur.date) + ' ' + val, src); return; }
+        if (label === '消耗品') {
+          var rm = val.match(/(\d+(?:\.\d+)?)\s*%/), r = rm ? Number(rm[1]) : 10;
+          var mm = parseMoney_(rm ? val.replace(rm[0], ' ') : val);
+          if (!mm) return fail(src, '消耗品: 品名 購入場所 税抜金額 税率 の順で書いてください');
+          var amt = mm.tax === 'in' ? Math.round(mm.amt / (1 + r / 100)) : mm.amt;
+          var parts = mm.rest.split(/\s+/).filter(Boolean);
+          if (!parts.length) return fail(src, '消耗品: 品名がありません');
+          emit('領収書 ' + ymd_(cur.date) + ' ' + (cur.user || '本部') + ' ' + cur.event + ' ' + parts[0] + ' ' +
+            (parts.slice(1).join(' ') || '-') + ' ' + amt + ' ' + r + '%', src);
+          return;
+        }
+        if (EXPENSE_LABELS.indexOf(label) >= 0) { expandExpense_(label, val, cur.event, cur.date, '', src, emit, fail); return; }
+        return fail(src, '日次報告の中では「' + lm[1] + '」は使えません');
+      }
+      return fail(src, '持込備品の中では「' + lm[1] + '」は使えません');
+    }
+
+    // 従来形式の行が続いた場合は、ブロックを閉じてそのまま渡す
+    if (/^(売上|在庫|人件費|経費|領収書|催事作成|備品)\s+\S/.test(line)) { flush(); emit(line, src); return; }
+
+    // 中身の行
+    if (cur.kind === '日次報告') {
+      var first = line.split(/\s+/)[0];
+      if (ctx.products.indexOf(first) >= 0) {
+        if (!needCtx(src)) return;
+        if (!cur.stockHeader) { emit('在庫 ' + cur.event + ' ' + ymd_(cur.date), src); cur.stockHeader = true; }
+        emit(line, src); return;
+      }
+      return fail(src, '商品名が商品マスタにありません、または書き方が読み取れません');
+    }
+    if (cur.kind === '持込備品') {
+      if (!cur.event) return fail(src, '先に「催事名：浜屋」の行が必要です');
+      emit('備品 ' + cur.event + ' ' + line, src); return;
+    }
+    fail(src, '読み取れない行です');
+  });
+  flush();
+  return out;
+}
+
+/** 経費ラベル（什器代・交通費など）の1行を「経費 催事 日付 項目 内容 金額」に展開 */
+function expandExpense_(label, val, event, date, unused, src, emit, fail) {
+  var mm = parseMoney_(val);
+  if (!mm) return fail(src, label + ': 内容と金額（例: 税抜20,000円）を書いてください');
+  var amt = mm.amt;
+  var taxIn = TAX_IN_ITEMS.indexOf(label) >= 0;
+  if (taxIn && mm.tax === 'ex') amt = Math.round(amt * 1.1);
+  if (!taxIn && mm.tax === 'in') amt = Math.round(amt / 1.1);
+  emit('経費 ' + event + ' ' + ymd_(date) + ' ' + label + ' ' + (mm.rest || '-') + ' ' + amt, src);
+}
+
 /**
  * ctx = { year, events:[名前], products:[名前], lastWage:{氏名:時給} }
  * 戻り値 = { records:[...], errors:[{line, msg}] }
@@ -69,15 +222,16 @@ function pick_(line, label) {
 function parseReport(text, ctx) {
   var records = [], errors = [];
   var stockCtx = null; // 直近の「在庫 催事 日付」
-  var lines = String(text).split(/\r?\n/);
+  var lines = expandBlocks_(text, ctx);
 
-  lines.forEach(function (raw) {
-    var orig = raw.trim();
-    var line = normalize_(raw);
+  lines.forEach(function (item) {
+    var orig = item.src;
+    if (item.err) { errors.push({ line: orig, msg: item.err }); return; }
+    var line = normalize_(item.t);
     if (!line) return;
     var err = function (msg) { errors.push({ line: orig, msg: msg }); };
 
-    var kw = line.match(/^(催事作成|売上|在庫|人件費|経費|領収書)\s*(.*)$/);
+    var kw = line.match(/^(催事作成|売上|在庫|人件費|経費|領収書|備品)\s*(.*)$/);
 
     // 在庫ブロックの商品行
     if (!kw) {
@@ -92,10 +246,23 @@ function parseReport(text, ctx) {
         records.push(rec);
         return;
       }
-      return err('行頭が 売上/在庫/人件費/経費/領収書 でも商品名でもありません');
+      return err('行頭が 売上/在庫/人件費/経費/領収書/催事作成/日次報告/持込備品 でも商品名でもありません');
     }
 
     var type = kw[1], rest = kw[2];
+
+    if (type === '備品') {
+      // 備品 催事 品名 単価N 持込N 購入N 持帰N
+      var et = rest.split(/\s+/).filter(Boolean);
+      var eev = et.shift(), ename = et.shift();
+      if (!eev || !ename) return err('備品: 催事名と品名が必要です');
+      if (ctx.events.indexOf(eev) < 0) return err('催事名「' + eev + '」が催事マスタにありません');
+      var eafter = et.join(' ');
+      records.push({ type: 'equip', event: eev, name: ename, cost: pick_(eafter, '単価'), bring: pick_(eafter, '持込'),
+        buy: pick_(eafter, '購入'), back: pick_(eafter, '持帰'), src: orig });
+      return;
+    }
+
     var dt = parseDate_(rest, ctx.year);
     if (!dt) return err('日付(10/21 など)が読み取れません');
     var dateStr = dt.y + '-' + ('0' + dt.m).slice(-2) + '-' + ('0' + dt.d).slice(-2);
@@ -123,12 +290,13 @@ function parseReport(text, ctx) {
       if (!cname) return err('催事作成: 催事名がありません');
       if (ctx.events.indexOf(cname) >= 0) return err('催事「' + cname + '」はすでに催事マスタにあります（店舗ファイルが未作成なら、メニュー「店舗ファイルを作成」で作れます）');
       var rest2 = tokens.join(' ');
+      var pm = rest2.match(/場所\s*(.+)$/);        // 場所は行末まで（スペースを含んでよい）
+      if (pm) rest2 = rest2.slice(0, pm.index);
       var dm = rest2.match(/(\d+)\s*日/);
       var rm = rest2.match(/出店料率\s*(\d+(?:\.\d+)?)\s*%?/);
-      var pm = rest2.match(/場所\s*(\S+)/);
       ctx.events.push(cname);   // 同じ文の後続行（売上など）が通るように
       records.push({ type: 'create', event: cname, date: dateStr, days: dm ? Number(dm[1]) : null,
-        rate: rm ? Number(rm[1]) / 100 : '', place: pm ? pm[1] : '', src: orig });
+        rate: rm ? Number(rm[1]) / 100 : '', place: pm ? pm[1].trim() : '', src: orig });
       return;
     }
 
@@ -279,7 +447,7 @@ function importText(text) {
 
 /** 1つの店舗ファイルに、その催事の記録を書き込む。書けなかった行は errors で返す */
 function writeToStore_(store, recs, tz) {
-  var by = { sales: [], stock: [], labor: [], expense: [], receipt: [] };
+  var by = { sales: [], stock: [], labor: [], expense: [], receipt: [], equip: [] };
   recs.forEach(function (r) { by[r.type].push(r); });
   var errors = [];
   var fail = function (r, e) { errors.push({ src: r.src, msg: e.message }); };
@@ -300,7 +468,24 @@ function writeToStore_(store, recs, tz) {
     var n = firstEmpty_(s3, 1, 2, 300);
     s3.getRange(n, 1, 1, 6).setValues([[toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate]]);
   });
+  by.equip.forEach(function (r) { try { writeEquip_(store, r); } catch (e) { fail(r, e); } });
   return errors;
+}
+
+/** 備品原価タブ: 品名が同じ行は上書き（空欄の項目は既存の値を残す）、なければ空き行に追加 */
+function writeEquip_(store, r) {
+  var sh = store.getSheetByName(STORE.EQUIP);
+  var vals = sh.getRange(2, 1, 150, 5).getValues();
+  var row = 0, empty = 0;
+  for (var i = 0; i < vals.length; i++) {
+    if (!vals[i][0] && !empty) empty = i + 2;
+    if (String(vals[i][0]).trim() === r.name) { row = i + 2; break; }
+  }
+  var old = row ? vals[row - 2] : ['', '', '', '', ''];
+  row = row || empty;
+  if (!row) throw new Error('備品原価タブに空き行がありません');
+  var pick = function (v, o) { return v !== null ? v : o; };
+  sh.getRange(row, 1, 1, 5).setValues([[r.name, pick(r.cost, old[1]), pick(r.bring, old[2]), pick(r.buy, old[3]), pick(r.back, old[4])]]);
 }
 
 /** 在庫管理表の行・日付の位置を調べる（商品行を増減しても追従） */
