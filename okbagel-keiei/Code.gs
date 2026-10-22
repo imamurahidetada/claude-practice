@@ -134,7 +134,7 @@ function expandBlocks_(text, ctx) {
     if (!line) return;
 
     // 見出し行
-    var h = line.match(/^(催事作成|日次報告|持込備品|持ち込み備品)(?:\s+(\S+))?$/);
+    var h = line.match(/^(催事作成|日次報告|持込備品|持ち込み備品|期首在庫)(?:\s+(\S+))?$/);
     if (h && (h[1] !== '催事作成' || !h[2])) {
       flush();
       var kind = h[1] === '持ち込み備品' ? '持込備品' : h[1];
@@ -183,11 +183,11 @@ function expandBlocks_(text, ctx) {
         if (EXPENSE_LABELS.indexOf(label) >= 0) { expandExpense_(label, val, cur.event, cur.date, '', src, emit, fail); return; }
         return fail(src, '日次報告の中では「' + lm[1] + '」は使えません');
       }
-      return fail(src, '持込備品の中では「' + lm[1] + '」は使えません');
+      return fail(src, cur.kind + 'の中では「' + lm[1] + '」は使えません');
     }
 
     // 従来形式の行が続いた場合は、ブロックを閉じてそのまま渡す
-    if (/^(売上|在庫|人件費|経費|領収書|催事作成|備品)\s+\S/.test(line)) { flush(); emit(line, src); return; }
+    if (/^(売上|在庫|人件費|経費|領収書|催事作成|備品|期首)\s+\S/.test(line)) { flush(); emit(line, src); return; }
 
     // 中身の行
     if (cur.kind === '日次報告') {
@@ -198,6 +198,10 @@ function expandBlocks_(text, ctx) {
         emit(line, src); return;
       }
       return fail(src, '商品名が商品マスタにありません、または書き方が読み取れません');
+    }
+    if (cur.kind === '期首在庫') {
+      if (!cur.event) return fail(src, '先に「催事名：浜屋」の行が必要です');
+      emit('期首 ' + cur.event + ' ' + line, src); return;
     }
     if (cur.kind === '持込備品') {
       if (!cur.event) return fail(src, '先に「催事名：浜屋」の行が必要です');
@@ -236,7 +240,7 @@ function parseReport(text, ctx) {
     if (!line) return;
     var err = function (msg) { errors.push({ line: orig, msg: msg }); };
 
-    var kw = line.match(/^(催事作成|売上|在庫|人件費|経費|領収書|備品)\s*(.*)$/);
+    var kw = line.match(/^(催事作成|売上|在庫|人件費|経費|領収書|備品|期首)\s*(.*)$/);
 
     // 在庫ブロックの商品行
     if (!kw) {
@@ -245,7 +249,7 @@ function parseReport(text, ctx) {
         if (!stockCtx) return err('「在庫 催事名 日付」の行が先にありません');
         var rec = {
           type: 'stock', event: stockCtx.event, date: stockCtx.date, product: first,
-          in: pick_(line, '納品'), thaw: pick_(line, '解凍'), close: pick_(line, '閉店'),
+          open: pick_(line, '期首'), in: pick_(line, '納品'), thaw: pick_(line, '解凍'), close: pick_(line, '閉店'),
           loss: pick_(line, 'ロス'), other: pick_(line, '他'), src: orig
         };
         records.push(rec);
@@ -255,6 +259,17 @@ function parseReport(text, ctx) {
     }
 
     var type = kw[1], rest = kw[2];
+
+    if (type === '期首') {
+      // 期首 催事 商品名 個数   （初日より前から冷凍庫にある数）
+      var ot = rest.split(/\s+/).filter(Boolean);
+      var oev = ot.shift(), oprod = ot.shift(), oqty = ot.length ? num_(ot[ot.length - 1].replace(/[^\d,.-]/g, '')) : NaN;
+      if (!oev || !oprod || isNaN(oqty)) return err('期首: 「商品名 個数」の形で書いてください（例: プレーン 48）');
+      if (ctx.events.indexOf(oev) < 0) return err('催事名「' + oev + '」が催事マスタにありません');
+      if (ctx.products.indexOf(oprod) < 0) return err('商品名「' + oprod + '」が商品マスタにありません');
+      records.push({ type: 'open', event: oev, product: oprod, qty: oqty, src: orig });
+      return;
+    }
 
     if (type === '備品') {
       // 備品 催事 品名 単価N 持込N 購入N 持帰N
@@ -453,7 +468,7 @@ function importText(text) {
 
 /** 1つの店舗ファイルに、その催事の記録を書き込む。書けなかった行は errors で返す */
 function writeToStore_(store, recs, tz) {
-  var by = { sales: [], stock: [], labor: [], expense: [], receipt: [], equip: [] };
+  var by = { sales: [], stock: [], labor: [], expense: [], receipt: [], equip: [], open: [] };
   recs.forEach(function (r) { by[r.type].push(r); });
   var errors = [];
   var fail = function (r, e) { errors.push({ src: r.src, msg: e.message }); };
@@ -461,6 +476,7 @@ function writeToStore_(store, recs, tz) {
   var sh = store.getSheetByName(STORE.STOCK);
   var layout = stockLayout_(sh);
 
+  by.open.forEach(function (r) { try { writeOpen_(sh, layout, r); } catch (e) { fail(r, e); } });
   by.stock.forEach(function (r) { try { writeStock_(sh, layout, r); } catch (e) { fail(r, e); } });
   by.sales.forEach(function (r) { try { writeSales_(sh, layout, r); } catch (e) { fail(r, e); } });
   by.labor.forEach(function (r) { try { writeLabor_(store, r, tz); } catch (e) { fail(r, e); } });
@@ -513,9 +529,17 @@ function dayBlock_(layout, dateStr) {
   return FIRST_COL + 8 * k;
 }
 
+/** 期首冷凍在庫（D列）に書く */
+function writeOpen_(sh, layout, r) {
+  var i = layout.names.indexOf(r.product);
+  if (i < 0 || i >= layout.count) throw new Error('商品「' + r.product + '」が在庫管理表にありません');
+  sh.getRange(FIRST_ROW + i, 4).setValue(r.qty);
+}
+
 function writeStock_(sh, layout, r) {
   var i = layout.names.indexOf(r.product);
   if (i < 0 || i >= layout.count) throw new Error('商品「' + r.product + '」が在庫管理表にありません');
+  if (r.open !== null && r.open !== undefined) writeOpen_(sh, layout, { product: r.product, qty: r.open });
   var c = dayBlock_(layout, r.date), row = FIRST_ROW + i;
   var set = function (off, v) { if (v !== null) sh.getRange(row, c + off).setValue(v); };
   set(0, r.in); set(2, r.thaw); set(3, r.close); set(4, r.loss); set(5, r.other);
