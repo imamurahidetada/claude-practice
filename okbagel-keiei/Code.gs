@@ -116,7 +116,8 @@ function pick_(line, label) {
 
 // ---------------------------------------------------------------- 報告テンプレ（ラベル形式）を1行形式に展開する
 
-var EXPENSE_LABELS = ['什器代', '宿泊費', '交通費', '配送料', '協賛費', '返送費', '支払手数料'];
+var EXPENSE_ALIAS = { '送料': '配送料', '返送料': '返送費', 'その他経費': 'その他' };   // 報告文での呼び方 → 使用経費の経費項目
+var EXPENSE_LABELS = ['什器代', '宿泊費', '交通費', '配送料', '協賛費', '返送費', '支払手数料', 'その他', '送料', '返送料', 'その他経費'];
 var TAX_IN_ITEMS = ['宿泊費', '交通費'];   // 使用経費タブは、この2項目だけ入力額を税込とみなして税抜に直す
 
 function ymd_(d) { return d.y + '/' + d.m + '/' + d.d; }
@@ -145,6 +146,9 @@ function expandBlocks_(text, ctx) {
 
   function needCtx(src) {
     if (!cur.event) { fail(src, '先に「店名：浜屋」の行が必要です'); return false; }
+    if (!cur.date && cur.expenseOnly && ctx.today) {
+      cur.date = { y: ctx.today.getFullYear(), m: ctx.today.getMonth() + 1, d: ctx.today.getDate() };   // 日付を省いた経費報告は今日の日付
+    }
     if (!cur.date) { fail(src, '先に「日付：10/21」の行が必要です'); return false; }
     return true;
   }
@@ -185,11 +189,11 @@ function expandBlocks_(text, ctx) {
     if (!line) return;
 
     // 見出し行
-    var h = line.match(/^(催事作成|日次報告|持込備品|持ち込み備品|期首在庫)(?:\s+(\S+))?$/);
+    var h = line.match(/^(催事作成|日次報告|経費報告|持込備品|持ち込み備品|期首在庫)(?:\s+(\S+))?$/);
     if (h && (h[1] !== '催事作成' || !h[2])) {
       flush();
-      var kind = h[1] === '持ち込み備品' ? '持込備品' : h[1];
-      cur = { kind: kind, event: h[2] || null, date: null, user: null, src: src,
+      var kind = h[1] === '持ち込み備品' ? '持込備品' : (h[1] === '経費報告' ? '日次報告' : h[1]);   // 経費報告は日次報告の経費だけ版（日付を省くと今日）
+      cur = { kind: kind, expenseOnly: h[1] === '経費報告', event: h[2] || null, date: null, user: null, src: src,
         place: '', shop: '', period: '', rate: '', exps: [], salesEx: null, salesInc: null, salesSrc: src, stockHeader: false };
       return;
     }
@@ -266,13 +270,28 @@ function expandBlocks_(text, ctx) {
 
 /** 経費ラベル（什器代・交通費など）の1行を「経費 催事 日付 項目 内容 金額」に展開 */
 function expandExpense_(label, val, event, date, unused, src, emit, fail) {
-  var mm = parseMoney_(val);
-  if (!mm) return fail(src, label + ': 内容と金額（例: 税抜20,000円）を書いてください');
-  var amt = mm.amt;
-  var taxIn = TAX_IN_ITEMS.indexOf(label) >= 0;
-  if (taxIn && mm.tax === 'ex') amt = Math.round(amt * 1.1);
-  if (!taxIn && mm.tax === 'in') amt = Math.round(amt / 1.1);
-  emit('経費 ' + event + ' ' + ymd_(date) + ' ' + label + ' ' + (mm.rest || '-') + ' ' + amt, src);
+  var item = EXPENSE_ALIAS[label] || label;
+  var amt, note, tax = null;
+  var tm = val.match(/(税抜|税込)/);
+  if (tm) tax = tm[1] === '税抜' ? 'ex' : 'in';
+
+  // 「佐川 10ケース 単価1,220円」「佐川 10cs 1220」のように 数量 × 単価 で書かれたら、掛け算して合計にする
+  var qm = val.match(/(\d+(?:\.\d+)?)\s*(ケース|cs|CS|個|台|箱|枚|本)\s*[×xX*]?\s*(?:単価)?\s*([\d,]+)\s*円?/);
+  if (qm) {
+    var qty = Number(qm[1]), unit = num_(qm[3]);
+    amt = Math.round(qty * unit);
+    var rest = val.replace(qm[0], ' ').replace(/税抜|税込/g, ' ').replace(/\s+/g, '');
+    var uname = /ケース|cs|CS/.test(qm[2]) ? 'cs' : qm[2];
+    note = rest + qm[1] + uname + '/' + unit;           // 例: 佐川10cs/1220
+  } else {
+    var mm = parseMoney_(val);
+    if (!mm) return fail(src, label + ': 内容と金額（例: 税抜20,000円 / 佐川 10ケース 単価1,220円）を書いてください');
+    amt = mm.amt; note = mm.rest || '-'; tax = mm.tax || tax;
+  }
+  var taxIn = TAX_IN_ITEMS.indexOf(item) >= 0;
+  if (taxIn && tax === 'ex') amt = Math.round(amt * 1.1);
+  if (!taxIn && tax === 'in') amt = Math.round(amt / 1.1);
+  emit('経費 ' + event + ' ' + ymd_(date) + ' ' + item + ' ' + note + ' ' + amt, src);
 }
 
 /**
