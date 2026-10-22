@@ -256,11 +256,11 @@ function expandBlocks_(text, ctx) {
     }
     if (cur.kind === '期首在庫') {
       if (!cur.event) return fail(src, '先に「店名：浜屋」の行が必要です');
-      emit('期首 ' + cur.event + ' ' + line, src); return;
+      emit('期首 ' + cur.event + ' ' + line + (cur.date ? ' 基準日 ' + ymd_(cur.date) : ''), src); return;
     }
     if (cur.kind === '持込備品') {
       if (!cur.event) return fail(src, '先に「店名：浜屋」の行が必要です');
-      emit('備品 ' + cur.event + ' ' + line, src); return;
+      emit('備品 ' + cur.event + ' ' + line + (cur.date ? ' 基準日 ' + ymd_(cur.date) : ''), src); return;
     }
     fail(src, '読み取れない行です');
   });
@@ -330,12 +330,21 @@ function parseReport(text, ctx) {
 
     var type = kw[1], rest = kw[2];
 
+    // 日付のない報告（期首・備品）は「基準日 2026/09/09」があれば、その日が期間内の催事に振り分ける
+    var hintDate = null;
+    var hm = rest.match(/基準日\s*(\S+)/);
+    if (hm) {
+      rest = rest.replace(hm[0], ' ');
+      var hd = parseDate_(hm[1], ctx.year);
+      if (hd) hintDate = hd.y + '-' + ('0' + hd.m).slice(-2) + '-' + ('0' + hd.d).slice(-2);
+    }
+
     if (type === '期首') {
       // 期首 催事 商品名 個数   （初日より前から冷凍庫にある数）
       var ot = rest.split(/\s+/).filter(Boolean);
       var oev = ot.shift(), oprod = ot.shift(), oqty = ot.length ? num_(ot[ot.length - 1].replace(/[^\d,.-]/g, '')) : NaN;
       if (!oev || !oprod || isNaN(oqty)) return err('期首: 「商品名 個数」の形で書いてください（例: プレーン 48）');
-      var okey = findEvent_(ctx.events, oev, null, ctx.today);
+      var okey = findEvent_(ctx.events, oev, hintDate, ctx.today);
       if (!okey) return err('店名「' + oev + '」が催事マスタにありません');
       if (ctx.products.indexOf(oprod) < 0) return err('商品名「' + oprod + '」が商品マスタにありません');
       records.push({ type: 'open', event: okey, product: oprod, qty: oqty, src: orig });
@@ -347,7 +356,7 @@ function parseReport(text, ctx) {
       var et = rest.split(/\s+/).filter(Boolean);
       var eev = et.shift(), ename = et.shift();
       if (!eev || !ename) return err('備品: 催事名と品名が必要です');
-      var ekey = findEvent_(ctx.events, eev, null, ctx.today);
+      var ekey = findEvent_(ctx.events, eev, hintDate, ctx.today);
       if (!ekey) return err('店名「' + eev + '」が催事マスタにありません');
       var eafter = et.join(' ');
       records.push({ type: 'equip', event: ekey, name: ename, cost: pick_(eafter, '単価'), bring: pick_(eafter, '持込'),
@@ -454,6 +463,7 @@ function onOpen() {
     .addItem('日数・出店料率を店舗ファイルに反映', 'updateDays')
     .addItem('店舗データを吸い上げ（全催事）', 'pullAll')
     .addSeparator()
+    .addItem('過去の催事データを移行（元の経営管理から）', 'migratePast')
     .addItem('フォーム自動取込セットアップ（初回のみ）', 'setupForm')
     .addItem('毎日自動吸い上げを設定（初回のみ）', 'setupDailyPull')
     .addToUi();
@@ -807,6 +817,93 @@ function createStoreFiles() {
     if (r[EV.KEY] && !r[EV.ID]) { createStoreFile_(hq, i + 2); made.push(r[EV.KEY]); }
   });
   SpreadsheetApp.getUi().alert(made.length ? '店舗ファイルを作成しました:\n' + made.join('\n') : '作成が必要な催事はありません');
+}
+
+// ---------------------------------------------------------------- 過去の催事データの移行（元の経営管理ファイルから）
+
+/**
+ * 終わった催事ごとに、元の経営管理ファイルの同名タブ（在庫）と、使用経費・人件費・備品原価・領収書の該当行を、
+ * 店舗ファイルへ写す。店舗ファイルが無ければ作る。移行済みの催事は飛ばす（何度押してもよい）。
+ * 元ファイルのIDは「設定」タブの B5。
+ */
+function migratePast() {
+  var hq = SpreadsheetApp.getActive();
+  var oldId = hq.getSheetByName(SHEET.SETTINGS).getRange('B5').getValue();
+  var ui = SpreadsheetApp.getUi();
+  if (!oldId) { ui.alert('「設定」タブのB5に、元の経営管理ファイル（Googleスプレッドシート版）のIDを入れてください'); return; }
+  var old = SpreadsheetApp.openById(String(oldId));
+  var tz = hq.getSpreadsheetTimeZone();
+  var now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var props = PropertiesService.getDocumentProperties();
+  var t0 = Date.now(), done = [], skipped = [], stopped = false;
+
+  readMaster_(hq).forEach(function (e) {
+    if (stopped) return;
+    if (!e.end || e.end >= today) return;                                // 終わった催事だけ
+    if (props.getProperty('migrated:' + e.key)) return;
+    var tab = old.getSheetByName(e.shop);
+    if (!tab) { skipped.push(e.key + '（元のファイルに「' + e.shop + '」タブなし）'); return; }
+    if (Date.now() - t0 > 4.2 * 60 * 1000) { stopped = true; return; }   // 実行時間の上限対策（もう一度押せば続きから）
+    try {
+      migrateOne_(old, tab, openStore_(hq, e.key), e.shop);
+      props.setProperty('migrated:' + e.key, '1');
+      done.push(e.key);
+    } catch (err) { skipped.push(e.key + '（' + err.message + '）'); }
+  });
+
+  if (done.length) pullStoreData_(hq, done);
+  ui.alert('過去データの移行\n移行: ' + (done.join('、') || 'なし') +
+    (skipped.length ? '\n飛ばした: ' + skipped.join('、') : '') +
+    (stopped ? '\n\n時間切れのため途中までです。もう一度「過去の催事データを移行」を押してください。' : ''));
+}
+
+function migrateOne_(old, tab, store, shop) {
+  var sh = store.getSheetByName(STORE.STOCK);
+  var layout = stockLayout_(sh);
+
+  // 在庫管理表: 元のタブの商品名で突き合わせて、入力欄（期首・納品・解凍・閉店・ロス・他・実売上）を写す
+  var oldNames = tab.getRange(FIRST_ROW, 3, 60, 1).getValues().map(function (r) { return String(r[0]).trim(); });
+  var oldEnd = oldNames.indexOf('商品合計'); if (oldEnd < 0) oldEnd = 17;
+  var rowOf = layout.names.slice(0, layout.count).map(function (n) {
+    var j = oldNames.indexOf(n); return j >= 0 && j < oldEnd ? j : -1;
+  });
+  var num = function (v) { return v === '' || v === null || isNaN(Number(v)) ? 0 : Number(v); };
+
+  var oldOpen = tab.getRange(FIRST_ROW, 4, oldEnd, 1).getValues();
+  sh.getRange(FIRST_ROW, 4, layout.count, 1).setValues(rowOf.map(function (j) { return [j < 0 ? 0 : num(oldOpen[j][0])]; }));
+
+  var oldSalesRow = FIRST_ROW + oldEnd + 2;
+  for (var k = 0; k < layout.days; k++) {
+    var c = FIRST_COL + 8 * k;
+    var blk = tab.getRange(FIRST_ROW, c, oldEnd, 6).getValues();           // 納品, 在庫計, 解凍, 閉店冷蔵, ロス, 他
+    sh.getRange(FIRST_ROW, c, layout.count, 1).setValues(rowOf.map(function (j) { return [j < 0 ? 0 : num(blk[j][0])]; }));
+    sh.getRange(FIRST_ROW, c + 2, layout.count, 4).setValues(rowOf.map(function (j) {
+      return j < 0 ? [0, 0, 0, 0] : [num(blk[j][2]), num(blk[j][3]), num(blk[j][4]), num(blk[j][5])];
+    }));
+    var sales = tab.getRange(oldSalesRow, c + 1, 1, 2).getValues()[0];
+    sh.getRange(layout.salesRow, c + 1, 1, 2).setValues([[num(sales[0]), num(sales[1])]]);
+  }
+
+  // 使用経費 / 人件費 / 備品原価 / 領収書: 元の表から、この催事の行だけを選んで、列を詰めて写す
+  var take = function (name, nCols, key) {
+    var s = old.getSheetByName(name);
+    var n = s ? s.getLastRow() - 1 : 0;
+    if (n < 1) return [];
+    return s.getRange(2, 1, n, nCols).getValues().filter(function (r) { return String(r[key]).trim() === shop; });
+  };
+  var put = function (name, rows, cols) {          // cols: [[元の列, 先の先頭列, 列数]...] を行ごとに並べ替えて書く
+    if (!rows.length) return;
+    var d = store.getSheetByName(name), start = firstEmpty_(d, 1, 2, 300);
+    cols.forEach(function (m) {
+      d.getRange(start, m.to, rows.length, m.from.length).setValues(rows.map(function (r) {
+        return m.from.map(function (i) { return r[i]; });
+      }));
+    });
+  };
+  put(STORE.EXPENSE, take('使用経費（本部専用）', 5, 1), [{ from: [0, 2, 3, 4], to: 1 }]);                       // 日付,項目,内容,金額
+  put(STORE.LABOR, take('人件費（本部専用）', 11, 2), [{ from: [0, 1, 4, 5, 6], to: 1 }, { from: [8, 9, 10], to: 7 }]);
+  put(STORE.EQUIP, take('備品原価（本部専用）', 6, 0), [{ from: [1, 2, 3, 4, 5], to: 1 }]);
+  put(STORE.RECEIPT, take('領収書（立替経費）', 9, 8), [{ from: [0, 1, 2, 3, 4, 5], to: 1 }]);
 }
 
 // ---------------------------------------------------------------- 年次まとめへの吸い上げ
