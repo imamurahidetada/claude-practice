@@ -569,7 +569,7 @@ function writeToStore_(store, recs, tz) {
   var layout = stockLayout_(sh);
 
   by.open.forEach(function (r) { try { writeOpen_(sh, layout, r); } catch (e) { fail(r, e); } });
-  by.stock.forEach(function (r) { try { writeStock_(sh, layout, r); } catch (e) { fail(r, e); } });
+  writeStockBatch_(sh, layout, by.stock, fail);
   by.sales.forEach(function (r) { try { writeSales_(sh, layout, r); } catch (e) { fail(r, e); } });
   by.labor.forEach(function (r) { try { writeLabor_(store, r, tz); } catch (e) { fail(r, e); } });
   by.expense.forEach(function (r) {
@@ -626,6 +626,30 @@ function writeOpen_(sh, layout, r) {
   var i = layout.names.indexOf(r.product);
   if (i < 0 || i >= layout.count) throw new Error('商品「' + r.product + '」が在庫管理表にありません');
   sh.getRange(FIRST_ROW + i, 4).setValue(r.qty);
+}
+
+/** 在庫の入力を、日ごとにまとめて読み書きする（1セルずつ書くより速く、数日分を一度に貼っても時間切れになりにくい） */
+function writeStockBatch_(sh, layout, recs, fail) {
+  var byDate = {};
+  recs.forEach(function (r) { (byDate[r.date] = byDate[r.date] || []).push(r); });
+  Object.keys(byDate).forEach(function (d) {
+    var c;
+    try { c = dayBlock_(layout, d); } catch (e) { byDate[d].forEach(function (r) { fail(r, e); }); return; }
+    var a = sh.getRange(FIRST_ROW, c, layout.count, 1);        // 納品
+    var b = sh.getRange(FIRST_ROW, c + 2, layout.count, 4);    // 解凍, 閉店冷蔵, ロス, 他
+    var av = a.getValues(), bv = b.getValues();
+    byDate[d].forEach(function (r) {
+      var i = layout.names.indexOf(r.product);
+      if (i < 0 || i >= layout.count) return fail(r, new Error('商品「' + r.product + '」が在庫管理表にありません'));
+      if (r.open !== null && r.open !== undefined) sh.getRange(FIRST_ROW + i, 4).setValue(r.open);   // 期首冷凍在庫
+      if (r.in !== null) av[i][0] = r.in;
+      if (r.thaw !== null) bv[i][0] = r.thaw;
+      if (r.close !== null) bv[i][1] = r.close;
+      if (r.loss !== null) bv[i][2] = r.loss;
+      if (r.other !== null) bv[i][3] = r.other;
+    });
+    a.setValues(av); b.setValues(bv);
+  });
 }
 
 function writeStock_(sh, layout, r) {
