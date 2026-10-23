@@ -1092,7 +1092,7 @@ function cellKey_(v, tz) {
 
 // ---------------------------------------------------------------- レシートの写真を読み取って取り込む（Claude API）
 
-var RECEIPT_MODEL = 'claude-sonnet-5-5';
+var RECEIPT_MODEL = 'claude-sonnet-5-5';   // 設定タブのB8で変えられる（例: claude-haiku-5-5 は安い、claude-opus-5-5 は高性能）
 var RECEIPT_PROMPT = [
   'これは日本の店舗のレシート（または日次締めの精算レシート）の画像です。次のJSONだけを返してください（説明文やコードブロックは不要）。',
   '{',
@@ -1131,7 +1131,7 @@ function parseModelJson_(text) {
 }
 
 /** 画像/PDFを Claude API に渡して、レシートの内容を取り出す */
-function readReceipt_(file, apiKey) {
+function readReceipt_(file, apiKey, model) {
   var blob = file.getBlob(), mime = blob.getContentType();
   var isPdf = mime === 'application/pdf';
   if (!isPdf && !/^image\/(jpeg|png|gif|webp)$/.test(mime)) throw new Error('対応していない形式です（' + mime + '）。JPEG/PNG/PDFで入れてください');
@@ -1141,7 +1141,8 @@ function readReceipt_(file, apiKey) {
     method: 'post', contentType: 'application/json', muteHttpExceptions: true,
     headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     payload: JSON.stringify({
-      model: RECEIPT_MODEL, max_tokens: 1500,
+      model: model || RECEIPT_MODEL, max_tokens: 4000,
+      output_config: { effort: 'low' },             // 読み取りだけなので、考える量は控えめ（費用を抑える）
       messages: [{ role: 'user', content: [
         { type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: mime, data: data } },
         { type: 'text', text: RECEIPT_PROMPT }
@@ -1207,6 +1208,7 @@ function processReceipts() {
   var apiKey = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
   var set = hq.getSheetByName(SHEET.SETTINGS);
   var inId = set.getRange('B6').getValue(), doneId = set.getRange('B7').getValue();
+  var model = String(set.getRange('B8').getValue() || '').trim() || RECEIPT_MODEL;
   if (!apiKey || !inId || !doneId) { if (ui) ui.alert('先に「レシート読み取りの設定（APIキー）」を行ってください（設定タブのB6・B7にフォルダIDも必要です）'); return; }
 
   var inbox = DriveApp.getFolderById(inId), done = DriveApp.getFolderById(doneId);
@@ -1220,7 +1222,7 @@ function processReceipts() {
     var f = files.next();
     n++;
     try {
-      var rc = readReceipt_(f, apiKey);
+      var rc = readReceipt_(f, apiKey, model);
       var conv = receiptToReport_(rc, f.getName(), events, today);
       if (conv.error) throw new Error(conv.error);
       var msg = importText(conv.text);
