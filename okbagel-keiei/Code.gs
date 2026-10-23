@@ -29,7 +29,8 @@ var STORE = {
   LABOR: '人件費',              // A日付 B氏名 C出勤 D退勤 E休憩 F労働時間(式) G時給 H交通費(証あり) I交通費(証なし) J総支給(式)
   EXPENSE: '使用経費',          // A日付 B経費項目 C内容 D入力金額 E税抜金額(式)
   RECEIPT: '領収書',            // A使用日 B使用者 C項目 D購入場所 E税抜 F税率 G消費税(式) H税込(式) I月(式)
-  EQUIP: '備品原価',            // A品名 B原価単価 C事前持込み数 D途中購入 E持ち帰り数 F使用数(式) G金額(式)
+  EQUIP: '備品原価',            // A品名 B原価単価 C事前持込み数 D途中購入(式:備品購入の合計) E持ち帰り数 F使用数(式) G金額(式)
+  EQUIP_BUY: '備品購入',        // A日付 B品名 C数量 D単価(式) E金額(式)  ← 備品の買い足しを日ごとに残す
   SUMMARY: '集計用'
 };
 var DAYS = 31;          // 在庫管理表にある日数ブロックの最大数（使う日数は D1 に入り、残りは非表示）
@@ -373,7 +374,9 @@ function parseReport(text, ctx) {
         return qm ? { v: num_(qm[2]), add: !!qm[1] } : null;
       };
       var qb = qty('持込'), qp = qty('購入'), qk = qty('持帰');
-      records.push({ type: 'equip', event: ekey, name: ename, cost: pick_(eafter, '単価'),
+      var buyDate = hintDate;
+      if (!buyDate && ctx.today) buyDate = ctx.today.getFullYear() + '-' + ('0' + (ctx.today.getMonth() + 1)).slice(-2) + '-' + ('0' + ctx.today.getDate()).slice(-2);
+      records.push({ type: 'equip', event: ekey, name: ename, buyDate: buyDate, cost: pick_(eafter, '単価'),
         bring: qb ? qb.v : null, buy: qp ? qp.v : null, back: qk ? qk.v : null,
         addBring: !!(qb && qb.add), addBuy: !!(qp && qp.add), addBack: !!(qk && qk.add), src: orig });
       return;
@@ -597,12 +600,49 @@ function writeToStore_(store, recs, tz) {
     var n = firstEmpty_(s3, 1, 2, 300);
     s3.getRange(n, 1, 1, 6).setValues([[toDate_(r.date), r.user, r.item, r.place, r.amount, r.rate]]);
   });
-  by.equip.forEach(function (r) { try { writeEquip_(store, r); } catch (e) { fail(r, e); } });
+  by.equip.forEach(function (r) { try { writeEquip_(store, r, tz); } catch (e) { fail(r, e); } });
   return errors;
 }
 
-/** 備品原価タブ: 品名が同じ行は上書き（空欄の項目は既存の値を残す）、なければ空き行に追加 */
-function writeEquip_(store, r) {
+/**
+ * 備品購入タブ（買い足しの日ごとの履歴）が無い店舗ファイルには作り、備品原価の「途中購入」を、その合計を出す式にする。
+ * すでに入っていた「途中購入」の数は、開始日付の1行として履歴に移す。
+ */
+function ensureEquipBuy_(store) {
+  var buy = store.getSheetByName(STORE.EQUIP_BUY);
+  if (buy) return buy;
+  var eq = store.getSheetByName(STORE.EQUIP);
+  var start = asDate_(store.getSheetByName(STORE.STOCK).getRange('B2').getValue()) || new Date();
+  buy = store.insertSheet(STORE.EQUIP_BUY);
+  buy.getRange(1, 1, 1, 5).setValues([['日付', '品名', '数量', '単価(自動)', '金額(自動)']])
+    .setBackground('#333333').setFontColor('#ffffff').setFontWeight('bold');
+  buy.setFrozenRows(1);
+  var carry = [];
+  eq.getRange(2, 1, 150, 4).getValues().forEach(function (r) {
+    if (r[0] && Number(r[3]) > 0) carry.push([start, r[0], Number(r[3])]);
+  });
+  if (carry.length) buy.getRange(2, 1, carry.length, 3).setValues(carry);
+  var f = [];
+  for (var i = 2; i <= 300; i++) {
+    f.push(['=IF(B' + i + '="","",IFERROR(INDEX(' + STORE.EQUIP + '!$B$2:$B$151,MATCH(B' + i + ',' + STORE.EQUIP + '!$A$2:$A$151,0)),""))',
+            '=IF(OR(C' + i + '="",D' + i + '=""),"",C' + i + '*D' + i + ')']);
+  }
+  buy.getRange(2, 4, 299, 2).setFormulas(f);
+  buy.getRange(2, 1, 299, 1).setNumberFormat('yyyy/mm/dd');
+  var df = [];
+  for (var j = 2; j <= 151; j++) {
+    df.push(['=IF(A' + j + '="",0,SUMIFS(' + STORE.EQUIP_BUY + '!$C$2:$C$300,' + STORE.EQUIP_BUY + '!$B$2:$B$300,A' + j + '))']);
+  }
+  eq.getRange(2, 4, 150, 1).setFormulas(df).setNumberFormat('0.##;-0.##;;@');
+  return buy;
+}
+
+/**
+ * 備品原価タブ: 品名が同じ行は更新（空欄の項目は今の値を残す）、なければ空き行に追加。
+ * 買い足し（購入）は備品購入タブに日付つきで記録する（同じ日・同じ品名は置き換え、「購入+N」なら足す）。
+ */
+function writeEquip_(store, r, tz) {
+  var buySh = ensureEquipBuy_(store);
   var sh = store.getSheetByName(STORE.EQUIP);
   var vals = sh.getRange(2, 1, 150, 5).getValues();
   var row = 0, empty = 0;
@@ -617,8 +657,25 @@ function writeEquip_(store, r) {
     if (v === null) return o;
     return add ? (Number(o) || 0) + v : v;            // +付きなら今の数に足す
   };
-  sh.getRange(row, 1, 1, 5).setValues([[r.name, pick(r.cost, old[1], false),
-    pick(r.bring, old[2], r.addBring), pick(r.buy, old[3], r.addBuy), pick(r.back, old[4], r.addBack)]]);
+  sh.getRange(row, 1, 1, 3).setValues([[r.name, pick(r.cost, old[1], false), pick(r.bring, old[2], r.addBring)]]);
+  sh.getRange(row, 5).setValue(pick(r.back, old[4], r.addBack));      // D列（途中購入）は式なので触らない
+
+  if (r.buy !== null && r.buy !== undefined) {
+    var date = r.buyDate;
+    var rows = buySh.getRange(2, 1, 299, 3).getValues();
+    var at = 0, free = 0;
+    for (var k = 0; k < rows.length; k++) {
+      if (!rows[k][1] && !rows[k][0] && !free) free = k + 2;
+      if (cellKey_(rows[k][0], tz) === date && String(rows[k][1]).trim() === r.name) { at = k + 2; break; }
+    }
+    if (at) {
+      var cur = Number(buySh.getRange(at, 3).getValue()) || 0;
+      buySh.getRange(at, 3).setValue(r.addBuy ? cur + r.buy : r.buy);
+    } else if (r.buy !== 0) {
+      if (!free) throw new Error('備品購入タブに空き行がありません');
+      buySh.getRange(free, 1, 1, 3).setValues([[toDate_(date), r.name, r.buy]]);
+    }
+  }
 }
 
 /** 在庫管理表の行・日付の位置を調べる（商品行を増減しても追従） */
@@ -892,7 +949,7 @@ function migratePast() {
     if (!tab) { skipped.push(key + '（元のファイルに「' + shop + '」タブなし）'); return; }
     if (Date.now() - t0 > 4.2 * 60 * 1000) { stopped = true; return; }   // 実行時間の上限対策（もう一度押せば続きから）
     try {
-      migrateOne_(old, tab, openStore_(hq, key), shop);
+      migrateOne_(old, tab, openStore_(hq, key), shop, asDate_(v[EV.START]) || new Date());
       sh.getRange(i + 2, 10).setValue('済');
       done.push(key);
     } catch (err) { skipped.push(key + '（' + err.message + '）'); }
@@ -905,7 +962,7 @@ function migratePast() {
     (stopped ? '\n\n時間切れのため途中までです。もう一度押すと、○のまま残った分が続きから進みます。' : ''));
 }
 
-function migrateOne_(old, tab, store, shop) {
+function migrateOne_(old, tab, store, shop, startDate) {
   var sh = store.getSheetByName(STORE.STOCK);
   var layout = stockLayout_(sh);
 
@@ -949,12 +1006,17 @@ function migrateOne_(old, tab, store, shop) {
     });
   };
   // やり直しで二重にならないよう、入力欄をいったん空にしてから写す
-  [[STORE.EXPENSE, 'A2:D300'], [STORE.LABOR, 'A2:E300'], [STORE.LABOR, 'G2:I300'], [STORE.EQUIP, 'A2:E150'], [STORE.RECEIPT, 'A2:F300']].forEach(function (x) {
+  ensureEquipBuy_(store);
+  [[STORE.EQUIP_BUY, 'A2:C300'], [STORE.EXPENSE, 'A2:D300'], [STORE.LABOR, 'A2:E300'], [STORE.LABOR, 'G2:I300'], [STORE.EQUIP, 'A2:C150'], [STORE.EQUIP, 'E2:E150'], [STORE.RECEIPT, 'A2:F300']].forEach(function (x) {
     store.getSheetByName(x[0]).getRange(x[1]).clearContent();
   });
   put(STORE.EXPENSE, take('使用経費（本部専用）', 5, 1), [{ from: [0, 2, 3, 4], to: 1 }]);                       // 日付,項目,内容,金額
   put(STORE.LABOR, take('人件費（本部専用）', 11, 2), [{ from: [0, 1, 4, 5, 6], to: 1 }, { from: [8, 9, 10], to: 7 }]);
-  put(STORE.EQUIP, take('備品原価（本部専用）', 6, 0), [{ from: [1, 2, 3, 4, 5], to: 1 }]);
+  var equipRows = take('備品原価（本部専用）', 6, 0);                       // 品名,単価,事前持込,途中購入,持ち帰り
+  ensureEquipBuy_(store);
+  put(STORE.EQUIP, equipRows, [{ from: [1, 2, 3], to: 1 }, { from: [5], to: 5 }]);   // 途中購入(D列)は式なので、備品購入タブへ
+  var buys = equipRows.filter(function (r) { return Number(r[4]) > 0; }).map(function (r) { return [startDate, r[1], Number(r[4])]; });
+  if (buys.length) store.getSheetByName(STORE.EQUIP_BUY).getRange(2, 1, buys.length, 3).setValues(buys);
   put(STORE.RECEIPT, take('領収書（立替経費）', 9, 8), [{ from: [0, 1, 2, 3, 4, 5], to: 1 }]);
 }
 
