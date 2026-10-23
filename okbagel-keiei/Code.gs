@@ -126,12 +126,12 @@ function ymd_(d) { return d.y + '/' + d.m + '/' + d.d; }
 
 /** 「税抜20,000円」「税込 8570」「1000円」から金額と税区分を取り出す */
 function parseMoney_(s) {
-  var m = s.match(/(税抜|税込)\s*([\d,]+)/);
+  var m = s.match(/(税抜|税込)\s*(-?[\d,]+)/);
   if (m) {
     return { amt: num_(m[2]), tax: m[1] === '税抜' ? 'ex' : 'in',
       rest: s.replace(m[0], ' ').replace(/円/g, ' ').replace(/\s+/g, ' ').replace(/[,\s]+$/, '').trim() };
   }
-  m = s.match(/([\d,]+)\s*円?\s*$/);
+  m = s.match(/(-?[\d,]+)\s*円?\s*$/);
   if (m) return { amt: num_(m[1]), tax: null, rest: s.slice(0, m.index).replace(/\s+/g, ' ').replace(/[,\s]+$/, '').trim() };
   return null;
 }
@@ -482,6 +482,9 @@ function onOpen() {
     .addItem('店舗データを吸い上げ（全催事）', 'pullAll')
     .addSeparator()
     .addItem('過去データを移行（催事マスタで○を付けた催事）', 'migratePast')
+    .addItem('レシートを読み取る（レシート受付フォルダ）', 'processReceipts')
+    .addItem('レシート読み取りの設定（APIキー）', 'setReceiptKey')
+    .addItem('レシート自動読み取り（1時間ごと）を設定', 'setupReceiptTrigger')
     .addItem('フォーム自動取込セットアップ（初回のみ）', 'setupForm')
     .addItem('毎日自動吸い上げを設定（初回のみ）', 'setupDailyPull')
     .addToUi();
@@ -1085,6 +1088,165 @@ function asDate_(v) {
 function toDate_(s) { var p = s.split('-'); return new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])); }
 function cellKey_(v, tz) {
   return v instanceof Date ? Utilities.formatDate(v, tz, 'yyyy-MM-dd') : String(v).trim();
+}
+
+// ---------------------------------------------------------------- レシートの写真を読み取って取り込む（Claude API）
+
+var RECEIPT_MODEL = 'claude-sonnet-5-5';
+var RECEIPT_PROMPT = [
+  'これは日本の店舗のレシート（または日次締めの精算レシート）の画像です。次のJSONだけを返してください（説明文やコードブロックは不要）。',
+  '{',
+  '  "type": "sales_close" | "purchase" | "unknown",',
+  '  "date": "YYYY-MM-DD",',
+  '  "store": "購入した店名（無ければ空文字）",',
+  '  "sales_excl_tax": 数値または null,',
+  '  "sales_incl_tax": 数値または null,',
+  '  "items": [ { "name": "品名", "amount_excl_tax": 数値または null, "amount_incl_tax": 数値または null, "tax_rate": 8 または 10 または null } ],',
+  '  "total_incl_tax": 数値または null,',
+  '  "note": "読み取りに自信がない点があれば短く"',
+  '}',
+  '決まり:',
+  '- type: レジの「日次締め／精算／Zレポート」など、1日の売上合計が出ている紙は sales_close。買い物のレシートは purchase。どちらか判断できなければ unknown。',
+  '- sales_close: sales_excl_tax は税抜の売上合計（返品・値引き後の純売上）、sales_incl_tax は税込の売上合計。items は空配列。',
+  '- purchase: 明細ごとに items に入れる。税抜の金額が書いてあれば amount_excl_tax、税込のみなら amount_incl_tax に入れ、tax_rate（軽減税率は8、標準は10）も分かれば入れる。値引き行は負の金額の明細にする。',
+  '- 金額はすべて円の数値（カンマなし）。見えない・分からない項目は null。推測で数字を作らない。',
+  '- date はレシートに印字された日付（西暦に直す）。'
+].join('\n');
+
+/** メニュー: APIキーをこのスクリプトだけに保存する（シートには書かない） */
+function setReceiptKey() {
+  var ui = SpreadsheetApp.getUi();
+  var r = ui.prompt('Claude APIキー', 'console.anthropic.com で作ったAPIキー（sk-ant-…）を貼ってください。\nスクリプトの「スクリプトプロパティ」に保存され、シートには残りません。', ui.ButtonSet.OK_CANCEL);
+  if (r.getSelectedButton() !== ui.Button.OK || !r.getResponseText().trim()) return;
+  PropertiesService.getScriptProperties().setProperty('ANTHROPIC_API_KEY', r.getResponseText().trim());
+  ui.alert('保存しました。「レシートを読み取る」で試してください。');
+}
+
+/** モデルが返した文字列から JSON を取り出す（```json で囲まれていても読む） */
+function parseModelJson_(text) {
+  var t = String(text).trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+  var a = t.indexOf('{'), b = t.lastIndexOf('}');
+  if (a < 0 || b < a) throw new Error('レシートの読み取り結果がJSONではありませんでした');
+  return JSON.parse(t.slice(a, b + 1));
+}
+
+/** 画像/PDFを Claude API に渡して、レシートの内容を取り出す */
+function readReceipt_(file, apiKey) {
+  var blob = file.getBlob(), mime = blob.getContentType();
+  var isPdf = mime === 'application/pdf';
+  if (!isPdf && !/^image\/(jpeg|png|gif|webp)$/.test(mime)) throw new Error('対応していない形式です（' + mime + '）。JPEG/PNG/PDFで入れてください');
+  if (blob.getBytes().length > 4.5 * 1024 * 1024) throw new Error('ファイルが大きすぎます（4.5MBまで）');
+  var data = Utilities.base64Encode(blob.getBytes());
+  var res = UrlFetchApp.fetch('https://api.anthropic.com/v1/messages', {
+    method: 'post', contentType: 'application/json', muteHttpExceptions: true,
+    headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    payload: JSON.stringify({
+      model: RECEIPT_MODEL, max_tokens: 1500,
+      messages: [{ role: 'user', content: [
+        { type: isPdf ? 'document' : 'image', source: { type: 'base64', media_type: mime, data: data } },
+        { type: 'text', text: RECEIPT_PROMPT }
+      ] }]
+    })
+  });
+  var code = res.getResponseCode(), body = res.getContentText();
+  if (code !== 200) throw new Error('API エラー(' + code + '): ' + body.slice(0, 200));
+  var content = JSON.parse(body).content || [];
+  var text = content.filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('');
+  return parseModelJson_(text);
+}
+
+function ymdToMd_(d) { var p = String(d).split('-'); return Number(p[1]) + '/' + Number(p[2]); }
+function cleanToken_(s) { return String(s || '').replace(/[\s　:：]/g, ''); }
+
+/**
+ * 読み取り結果を、報告文（日次報告）に直す。どの催事かは、ファイル名の先頭の店名 → レシートの日付が期間内の催事（1つに決まるとき）の順で決める。
+ * 戻り値: { text } または { error }
+ */
+function receiptToReport_(rc, fileName, events, today) {
+  if (!rc || rc.type === 'unknown' || !rc.type) return { error: 'レシートの種類（売上の日次締め／購入）を判別できませんでした' };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(rc.date || ''))) return { error: 'レシートの日付を読み取れませんでした' };
+
+  var key = null, first = String(fileName).split(/[\s_　]+/)[0];
+  if (first) key = findEvent_(events, first, rc.date, today);
+  if (!key) {
+    var d = toDate_(rc.date);
+    var open = events.filter(function (e) { return e.start && d >= e.start && d <= (e.end || e.start); });
+    if (open.length === 1) key = open[0].key;
+    else return { error: open.length ? 'この日に開催中の催事が複数あります。ファイル名の先頭に店名を付けてください（例: 浜屋 売上.jpg）' : 'この日付に開催中の催事が見つかりません（ファイル名の先頭に店名を付けてください）' };
+  }
+  var head = '日次報告 ' + key + ' ' + ymdToMd_(rc.date) + '\n';
+
+  if (rc.type === 'sales_close') {
+    if (rc.sales_excl_tax == null) return { error: '売上の税抜が読み取れませんでした（手入力してください）' };
+    return { key: key, text: head + '売上(税抜)：' + Math.round(rc.sales_excl_tax) + '\n' +
+      (rc.sales_incl_tax != null ? '売上(税込)：' + Math.round(rc.sales_incl_tax) + '\n' : '') };
+  }
+  if (rc.type === 'purchase') {
+    var store = cleanToken_(rc.store) || '-';
+    var lines = [];
+    (rc.items || []).forEach(function (it) {
+      var name = cleanToken_(it.name) || '品名不明';
+      var rate = it.tax_rate === 8 ? 8 : 10;
+      if (it.amount_excl_tax != null) lines.push('消耗品：' + name + ' ' + store + ' 税抜' + Math.round(it.amount_excl_tax) + '円 ' + rate + '%');
+      else if (it.amount_incl_tax != null) lines.push('消耗品：' + name + ' ' + store + ' 税込' + Math.round(it.amount_incl_tax) + '円 ' + rate + '%');
+    });
+    if (!lines.length && rc.total_incl_tax != null) lines.push('消耗品：レシート合計 ' + store + ' 税込' + Math.round(rc.total_incl_tax) + '円 10%');
+    if (!lines.length) return { error: '購入の明細・合計を読み取れませんでした' };
+    return { key: key, text: head + '報告者：レシート読み取り\n' + lines.join('\n') + '\n' };
+  }
+  return { error: '未対応のレシートの種類です（' + rc.type + '）' };
+}
+
+/**
+ * 「レシート受付」フォルダの写真/PDFを読み取って取り込み、終わったら「処理済み」フォルダへ移す。
+ * ファイル名の先頭に店名を付けると確実（例: 「浜屋 売上 10/21.jpg」）。付けなくても、その日に開催中の催事が1つなら自動で決まる。
+ */
+function processReceipts() {
+  var hq = SpreadsheetApp.getActive();
+  var ui = null; try { ui = SpreadsheetApp.getUi(); } catch (e) { /* トリガー実行 */ }
+  var apiKey = PropertiesService.getScriptProperties().getProperty('ANTHROPIC_API_KEY');
+  var set = hq.getSheetByName(SHEET.SETTINGS);
+  var inId = set.getRange('B6').getValue(), doneId = set.getRange('B7').getValue();
+  if (!apiKey || !inId || !doneId) { if (ui) ui.alert('先に「レシート読み取りの設定（APIキー）」を行ってください（設定タブのB6・B7にフォルダIDも必要です）'); return; }
+
+  var inbox = DriveApp.getFolderById(inId), done = DriveApp.getFolderById(doneId);
+  var tz = hq.getSpreadsheetTimeZone();
+  var now = new Date(), today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  var events = readMaster_(hq);
+  var files = inbox.getFiles(), t0 = Date.now(), n = 0, ok = [], ng = [];
+
+  while (files.hasNext()) {
+    if (n >= 8 || Date.now() - t0 > 4 * 60 * 1000) break;      // 1回あたりの上限（残りは次回）
+    var f = files.next();
+    n++;
+    try {
+      var rc = readReceipt_(f, apiKey);
+      var conv = receiptToReport_(rc, f.getName(), events, today);
+      if (conv.error) throw new Error(conv.error);
+      var msg = importText(conv.text);
+      if (/エラー 0 行/.test(msg)) {
+        var label = f.getName() + '（' + (rc.type === 'sales_close' ? '売上' : '購入') + ' ' + rc.date + '）';
+        f.setName(Utilities.formatDate(now, tz, 'yyyyMMdd-HHmm') + '_' + f.getName());
+        f.moveTo(done);
+        ok.push(label);
+      } else {
+        ng.push(f.getName() + ' → ' + msg.split('\n').slice(0, 3).join(' / '));
+      }
+    } catch (err) {
+      ng.push(f.getName() + ' → ' + err.message);
+      var ls = hq.getSheetByName(SHEET.LOG);
+      ls.getRange(ls.getLastRow() + 1, 1, 1, 5).setValues([[now, 'receipt', f.getName(), 'エラー', err.message]]);
+    }
+  }
+  var summary = 'レシート読み取り: 取り込み ' + ok.length + ' 件 / 失敗 ' + ng.length + ' 件' +
+    (ok.length ? '\n成功: ' + ok.join('、') : '') + (ng.length ? '\n失敗（ファイルは受付フォルダに残しています）:\n' + ng.join('\n') : '');
+  if (ui) ui.alert(summary);
+}
+
+function setupReceiptTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'processReceipts') ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('processReceipts').timeBased().everyHours(1).create();
+  SpreadsheetApp.getUi().alert('1時間ごとに、レシート受付フォルダを読み取る設定をしました');
 }
 
 // ---------------------------------------------------------------- 共有URL（Googleフォーム）で自動取り込み
